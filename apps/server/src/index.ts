@@ -54,9 +54,15 @@ app.post('/token', async (req, res) => {
   }
 })
 
-const port = Number(process.env.PORT) || 3000
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`)
-  console.log(`  GET  /health`)
-  console.log(`  POST /token  { installationId: "..." }`)
-})
+// Export for Vercel serverless
+export default app
+
+// Listen locally when not running on Vercel
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT) || 3000
+  app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`)
+    console.log(`  GET  /health`)
+    console.log(`  POST /token  { installationId: "..." }`)
+  })
+}
