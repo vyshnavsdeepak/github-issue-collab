@@ -1,0 +1,105 @@
+import { createSign } from 'crypto'
+
+export interface Issue {
+  number: number
+  title: string
+  state: string
+  body: string | null
+  html_url: string
+  user: { login: string } | null
+  created_at: string
+  updated_at: string
+  labels: Array<{ name: string; color: string }>
+  comments: number
+}
+
+export interface IssueComment {
+  id: number
+  body: string
+  user: { login: string } | null
+  created_at: string
+  html_url: string
+}
+
+function createJWT(appId: string, privateKey: string): string {
+  const now = Math.floor(Date.now() / 1000)
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
+  const payload = Buffer.from(
+    JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId })
+  ).toString('base64url')
+  const data = `${header}.${payload}`
+  const sign = createSign('RSA-SHA256')
+  sign.update(data)
+  return `${data}.${sign.sign(privateKey, 'base64url')}`
+}
+
+async function ghFetch<T>(url: string, token: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(options?.headers ?? {}),
+    },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`GitHub API ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export async function getInstallationToken(
+  installationId: string,
+  appId: string,
+  privateKey: string
+): Promise<string> {
+  const jwt = createJWT(appId, privateKey)
+  const data = await ghFetch<{ token: string }>(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    jwt,
+    { method: 'POST' }
+  )
+  return data.token
+}
+
+export async function listIssues(params: {
+  owner: string
+  repo: string
+  token: string
+  state?: 'open' | 'closed' | 'all'
+  per_page?: number
+}): Promise<Issue[]> {
+  const { owner, repo, token, state = 'open', per_page = 30 } = params
+  return ghFetch<Issue[]>(
+    `https://api.github.com/repos/${owner}/${repo}/issues?state=${state}&per_page=${per_page}&sort=updated`,
+    token
+  )
+}
+
+export async function getIssue(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+}): Promise<Issue> {
+  const { owner, repo, issueNumber, token } = params
+  return ghFetch<Issue>(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+    token
+  )
+}
+
+export async function listIssueComments(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+}): Promise<IssueComment[]> {
+  const { owner, repo, issueNumber, token } = params
+  return ghFetch<IssueComment[]>(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    token
+  )
+}

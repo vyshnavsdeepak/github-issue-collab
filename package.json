@@ -1,0 +1,16 @@
+{
+  "name": "github-issue-collab",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev:server": "tsx apps/server/src/index.ts",
+    "dev:cli": "tsx apps/cli/src/index.ts",
+    "build": "tsc -p packages/github/tsconfig.json && tsc -p apps/server/tsconfig.json && tsc -p apps/cli/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
