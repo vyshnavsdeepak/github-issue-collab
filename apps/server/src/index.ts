@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { readFileSync } from 'fs'
 import express from 'express'
 import { z } from 'zod'
-import { getInstallationToken } from '@github-issue-collab/github'
+import { getInstallationToken } from './github'
 
 const app = express()
 app.use(express.json())
