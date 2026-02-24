@@ -4,6 +4,7 @@
   "private": true,
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
+    "dev": "tsx apps/cli/src/index.ts serve",
     "dev:server": "tsx apps/server/src/index.ts",
     "dev:cli": "tsx apps/cli/src/index.ts",
     "build": "tsc -p packages/github/tsconfig.json && tsc -p apps/server/tsconfig.json && tsc -p apps/cli/tsconfig.json"

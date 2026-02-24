@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.pem
 .env
+.playwright-mcp/
+collab.db

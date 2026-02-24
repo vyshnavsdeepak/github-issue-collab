@@ -9,7 +9,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "paths": {
-      "@github-issue-collab/github": ["./packages/github/src/index.ts"]
+      "@github-issue-collab/github": ["./packages/github/src/index.ts"],
+      "@github-issue-collab/mcp-server": ["./packages/server/src/index.ts"]
     }
   },
   "exclude": ["**/node_modules/**", "**/dist/**"]

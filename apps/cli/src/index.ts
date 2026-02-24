@@ -1,175 +1,108 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
-import * as readline from 'readline'
+import 'dotenv/config'
+import { randomUUID } from 'crypto'
 import { Command } from 'commander'
-import { listIssues, getIssue, listIssueComments } from '@github-issue-collab/github'
-
-const CONFIG_DIR = join(homedir(), '.myapp')
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
-
-interface Config {
-  installationId: string
-  serverUrl: string
-}
-
-function loadConfig(): Config {
-  if (!existsSync(CONFIG_FILE)) {
-    console.error('Not authenticated. Run: myapp auth')
-    process.exit(1)
-  }
-  return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as Config
-}
-
-function saveConfig(config: Config): void {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2))
-}
-
-async function prompt(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close()
-      resolve(answer.trim())
-    })
-  })
-}
-
-async function fetchToken(config: Config): Promise<string> {
-  const res = await fetch(`${config.serverUrl}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ installationId: config.installationId }),
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Token fetch failed (${res.status}): ${text}`)
-  }
-  const data = (await res.json()) as { token: string }
-  return data.token
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
-}
+import { createApp, createInviteCode, listActiveSessions } from '@github-issue-collab/mcp-server'
 
 const program = new Command()
-program.name('myapp').description('GitHub issue reader').version('0.0.1')
+program.name('github-collab').description('GitHub Issue Collab — local MCP server CLI').version('0.0.1')
 
 program
-  .command('auth')
-  .description('Configure GitHub App installation ID')
-  .action(async () => {
-    const installationId = await prompt('GitHub App installation ID: ')
-    if (!installationId) {
-      console.error('Installation ID is required')
-      process.exit(1)
+  .command('serve')
+  .description('Start the local MCP server')
+  .action(() => {
+    const port = Number(process.env.PORT) || 3000
+    const { startServer } = createApp()
+    startServer(port)
+    const devSecret = process.env.DEV_SECRET
+    if (!devSecret) {
+      console.warn('\n  WARNING: DEV_SECRET is not set. Set it in your .env file.')
     }
-    const serverInput = await prompt('Server URL [http://localhost:3000]: ')
-    const serverUrl = serverInput || 'http://localhost:3000'
-    saveConfig({ installationId, serverUrl })
-    console.log(`Saved to ${CONFIG_FILE}`)
-    console.log(`Server: ${serverUrl}`)
+    console.log('\n  Add to Claude MCP config (claude_desktop_config.json):')
+    console.log('  {')
+    console.log('    "mcpServers": {')
+    console.log('      "github-collab": {')
+    console.log(`        "url": "http://localhost:${port}/mcp/developer",`)
+    console.log(`        "headers": { "Authorization": "Bearer ${devSecret ?? '<DEV_SECRET>'}" }`)
+    console.log('      }')
+    console.log('    }')
+    console.log('  }')
   })
 
-const issues = program.command('issues').description('Issue commands')
+program
+  .command('invite')
+  .description('Generate a one-time designer invite code')
+  .action(() => {
+    const code = randomUUID()
+    createInviteCode(code)
+    const port = Number(process.env.PORT) || 3000
+    console.log(`\nInvite code: ${code}`)
+    console.log(`Auth URL:    http://localhost:${port}/auth?invite=${code}`)
+    console.log('\nShare this URL with your designer. It can only be used once.\n')
+  })
 
-issues
-  .command('list <owner> <repo>')
-  .description('List issues')
-  .option('--state <state>', 'open | closed | all', 'open')
-  .action(async (owner: string, repo: string, opts: { state: 'open' | 'closed' | 'all' }) => {
-    const config = loadConfig()
-    let token: string
-    try {
-      token = await fetchToken(config)
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      process.exit(1)
-    }
-
-    let result
-    try {
-      result = await listIssues({ owner, repo, token, state: opts.state })
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      process.exit(1)
-    }
-
-    if (result.length === 0) {
-      console.log(`No ${opts.state} issues found in ${owner}/${repo}`)
+program
+  .command('status')
+  .description('Show active sessions')
+  .action(() => {
+    const sessions = listActiveSessions()
+    if (sessions.length === 0) {
+      console.log('\nNo active sessions.\n')
       return
     }
-
-    console.log(`\n${owner}/${repo} — ${opts.state} issues (${result.length})\n`)
-    for (const issue of result) {
-      const labels = issue.labels.map((l) => l.name).join(', ')
-      const labelStr = labels ? `  [${labels}]` : ''
-      console.log(`  #${issue.number.toString().padEnd(5)} ${issue.title}${labelStr}`)
-      console.log(`         ${issue.html_url}  (updated ${formatDate(issue.updated_at)})`)
-    }
-  })
-
-issues
-  .command('view <owner> <repo> <number>')
-  .description('View a single issue with comments')
-  .action(async (owner: string, repo: string, number: string) => {
-    const config = loadConfig()
-    let token: string
-    try {
-      token = await fetchToken(config)
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      process.exit(1)
-    }
-
-    const issueNumber = parseInt(number, 10)
-    if (isNaN(issueNumber)) {
-      console.error(`Invalid issue number: ${number}`)
-      process.exit(1)
-    }
-
-    let issue, comments
-    try {
-      ;[issue, comments] = await Promise.all([
-        getIssue({ owner, repo, issueNumber, token }),
-        listIssueComments({ owner, repo, issueNumber, token }),
-      ])
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      process.exit(1)
-    }
-
-    const labels = issue.labels.map((l) => l.name).join(', ')
-    console.log(`\n${'─'.repeat(60)}`)
-    console.log(`#${issue.number} ${issue.title}`)
-    console.log(`${'─'.repeat(60)}`)
-    console.log(`State:   ${issue.state}`)
-    console.log(`Author:  ${issue.user?.login ?? 'unknown'}`)
-    console.log(`Created: ${formatDate(issue.created_at)}`)
-    if (labels) console.log(`Labels:  ${labels}`)
-    console.log(`URL:     ${issue.html_url}`)
-
-    if (issue.body) {
-      console.log(`\n${issue.body}`)
-    }
-
-    if (comments.length > 0) {
-      console.log(`\n${'─'.repeat(60)}`)
-      console.log(`Comments (${comments.length})`)
-      console.log(`${'─'.repeat(60)}`)
-      for (const comment of comments) {
-        console.log(`\n@${comment.user?.login ?? 'unknown'} — ${formatDate(comment.created_at)}`)
-        console.log(comment.body)
-      }
+    console.log(`\nActive sessions (${sessions.length}):\n`)
+    for (const s of sessions) {
+      const user = (s.github_user ?? 'unknown').padEnd(24)
+      const role = s.role.padEnd(12)
+      const seen = s.last_seen ? `last seen ${s.last_seen}` : `created ${s.created_at}`
+      console.log(`  ${role} ${user} ${seen}`)
     }
     console.log()
+  })
+
+program
+  .command('setup')
+  .description('Print setup instructions')
+  .action(() => {
+    console.log(`
+GITHUB-ISSUE-COLLAB SETUP
+════════════════════════════════════════════════════════
+
+STEP 1 — Create a GitHub App
+  https://github.com/settings/apps/new
+  - Permissions: Issues (Read & Write)
+  - OAuth callback: http://localhost:3000/auth/callback
+
+STEP 2 — Install the app on your repo
+  Note the installation ID from the app's Installations page
+
+STEP 3 — Create .env file:
+
+  GITHUB_APP_ID=<your-app-id>
+  GITHUB_APP_PRIVATE_KEY_PATH=./private-key.pem
+  GITHUB_APP_INSTALLATION_ID=<installation-id>
+  GITHUB_REPO=owner/repo
+  GITHUB_APP_CLIENT_ID=<oauth-client-id>
+  GITHUB_APP_CLIENT_SECRET=<oauth-client-secret>
+  DEV_SECRET=<any-random-string>
+  PORT=3000
+
+STEP 4 — Start the server:
+  npm run dev
+
+STEP 5 — Add to Claude MCP config:
+  {
+    "mcpServers": {
+      "github-collab": {
+        "url": "http://localhost:3000/mcp/developer",
+        "headers": { "Authorization": "Bearer <DEV_SECRET>" }
+      }
+    }
+  }
+
+STEP 6 — Generate a designer invite:
+  tsx apps/cli/src/index.ts invite
+`)
   })
 
 program.parse()
