@@ -160,6 +160,11 @@ export async function markInviteUsed(code: string): Promise<void> {
   await db`UPDATE invite_codes SET used = TRUE WHERE code = ${code}`
 }
 
+export async function revokeDesignerSession(sessionId: string): Promise<void> {
+  const db = sql()
+  await db`DELETE FROM designer_sessions WHERE id = ${sessionId}`
+}
+
 export async function listPendingInvitesForUser(userId: string): Promise<InviteCode[]> {
   const db = sql()
   const rows = await db`

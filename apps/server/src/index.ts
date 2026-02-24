@@ -5,7 +5,7 @@ import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
 import { getUserByApiKey } from './db'
-import { handleConnect, handleConnectCallback } from './connect'
+import { handleConnect, handleConnectCallback, handleDashboard, handleCreateInvite, handleRevokeSession } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 
 const app = express()
@@ -37,6 +37,18 @@ app.get('/connect', (req, res) => {
 
 app.get('/connect/callback', (req, res) => {
   void handleConnectCallback(req, res)
+})
+
+app.get('/dashboard', (req, res) => {
+  void handleDashboard(req, res)
+})
+
+app.post('/dashboard/invite', (req, res) => {
+  void handleCreateInvite(req, res)
+})
+
+app.post('/dashboard/revoke', (req, res) => {
+  void handleRevokeSession(req, res)
 })
 
 app.get('/invite', (req, res) => {

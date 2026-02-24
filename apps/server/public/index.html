@@ -3,161 +3,171 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>github-issue-collab</title>
+  <title>github-issue-collab — GitHub Issues through Claude</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            mono: ['monospace'],
-            sans: ['Arial', 'sans-serif'],
-          },
-          colors: {
-            accent: '#ff0000',
-          },
-        },
-      },
-    }
-  </script>
   <style>
-    * {
-      border-radius: 0 !important;
-      box-shadow: none !important;
-      text-shadow: none !important;
-      transition: none !important;
-    }
+    * { border-radius: 0 !important; box-shadow: none !important; text-shadow: none !important; transition: none !important; }
     a { text-decoration: underline; }
     a:hover { background: #000; color: #fff; }
     pre, code { font-family: monospace; }
   </style>
 </head>
-<body class="bg-white text-black font-sans">
+<body class="bg-white text-black font-mono">
 
-  <!-- Header -->
-  <header class="border-b-4 border-black px-6 py-5 flex items-baseline justify-between">
-    <h1 class="font-mono font-bold text-2xl tracking-tight">github-issue-collab</h1>
-    <span class="font-mono text-sm border-2 border-black px-2 py-0.5">v0.0.1</span>
+  <!-- Nav -->
+  <header class="border-b-4 border-black px-6 py-4 flex items-center justify-between">
+    <span class="font-bold text-xl tracking-tight">github-issue-collab</span>
+    <nav class="flex items-center gap-6 text-sm">
+      <a href="#how-it-works" class="no-underline hover:underline hover:bg-transparent hover:text-black">How it works</a>
+      <a href="#tools" class="no-underline hover:underline hover:bg-transparent hover:text-black">Tools</a>
+      <a href="/dashboard" class="border-2 border-black px-3 py-1 no-underline hover:bg-black hover:text-white font-bold">Dashboard →</a>
+    </nav>
   </header>
 
   <!-- Hero -->
-  <section class="border-b-4 border-black px-6 py-12 bg-black text-white">
+  <section class="border-b-4 border-black px-6 py-16 bg-black text-white">
     <div class="max-w-3xl">
-      <p class="font-mono text-xs uppercase tracking-widest mb-3 text-red-500">Developer + Designer Collaboration</p>
-      <h2 class="font-mono font-bold text-5xl leading-tight mb-6">
+      <p class="text-xs uppercase tracking-widest mb-4 text-green-400">MCP Server · GitHub · Claude</p>
+      <h1 class="font-bold text-5xl leading-tight mb-6">
         GitHub Issues.<br>
         Through Claude.<br>
         Together.
-      </h2>
-      <p class="text-lg font-sans max-w-xl leading-relaxed mb-8">
-        An MCP server that lets developers and designers interact with GitHub issues directly inside Claude.
-        Hosted or local — your choice.
+      </h1>
+      <p class="text-lg max-w-xl leading-relaxed mb-3 text-gray-300">
+        Let developers and designers collaborate on GitHub issues directly inside Claude — with role-based access, invite links, and zero friction.
       </p>
-      <a href="/connect" class="font-mono font-bold text-lg bg-white text-black px-6 py-3 border-4 border-white inline-block no-underline hover:bg-black hover:text-white hover:border-white">
-        Connect your repo →
-      </a>
+      <p class="text-sm text-gray-500 mb-10">Hosted MCP server. No local setup required.</p>
+      <div class="flex flex-wrap gap-4">
+        <a href="/connect" class="font-bold text-base bg-white text-black px-6 py-3 border-4 border-white no-underline hover:bg-black hover:text-white hover:border-white">
+          Connect your repo →
+        </a>
+        <a href="/dashboard" class="font-bold text-base bg-black text-white px-6 py-3 border-4 border-white no-underline hover:bg-white hover:text-black">
+          Open Dashboard
+        </a>
+      </div>
     </div>
   </section>
 
-  <!-- Two setup paths -->
-  <section class="border-b-4 border-black">
+  <!-- Stats strip -->
+  <section class="border-b-4 border-black grid grid-cols-3 divide-x-4 divide-black">
+    <div class="px-6 py-5">
+      <p class="text-2xl font-bold">2 roles</p>
+      <p class="text-xs text-gray-500 mt-1">Developer + Designer</p>
+    </div>
+    <div class="px-6 py-5">
+      <p class="text-2xl font-bold">6 tools</p>
+      <p class="text-xs text-gray-500 mt-1">Full issue collaboration via MCP</p>
+    </div>
+    <div class="px-6 py-5">
+      <p class="text-2xl font-bold">0 config</p>
+      <p class="text-xs text-gray-500 mt-1">For designers — just click a link</p>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how-it-works" class="border-b-4 border-black">
     <div class="grid grid-cols-1 md:grid-cols-2">
 
+      <!-- Developer flow -->
       <div class="border-b-4 md:border-b-0 md:border-r-4 border-black p-6">
-        <div class="font-mono font-bold text-xs uppercase tracking-widest text-green-600 mb-2">RECOMMENDED</div>
-        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">HOSTED PATH</h3>
-        <p class="font-sans text-sm mb-6">Zero local setup. Install the GitHub App, get an API key, paste one JSON snippet into Claude. No process to run.</p>
-        <ol class="font-mono text-sm space-y-3">
-          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a></li>
-          <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Copy the MCP config from the setup page</li>
-          <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Paste into Claude — done</li>
+        <div class="font-bold text-xs uppercase tracking-widest text-green-600 mb-3">DEVELOPER</div>
+        <h3 class="font-bold text-2xl mb-5 border-b-2 border-black pb-3">One-time setup</h3>
+        <ol class="text-sm space-y-4">
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">01</span>
+            <div>
+              <a href="/connect" class="font-bold">Connect your GitHub repo →</a>
+              <p class="text-gray-500 text-xs mt-0.5">Install the GitHub App on your repo</p>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">02</span>
+            <div>
+              <span class="font-bold">Copy the MCP config</span>
+              <p class="text-gray-500 text-xs mt-0.5">One CLI command or JSON snippet into Claude</p>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">03</span>
+            <div>
+              <a href="/dashboard" class="font-bold">Manage from your dashboard →</a>
+              <p class="text-gray-500 text-xs mt-0.5">Invite designers, revoke access, see activity</p>
+            </div>
+          </li>
         </ol>
-        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
-          <p class="font-mono text-xs text-gray-500 mb-1">MCP endpoint</p>
-          <code class="font-mono text-sm">POST /mcp</code><br>
-          <code class="font-mono text-xs text-gray-600">Authorization: Bearer &lt;api_key&gt;</code>
-        </div>
       </div>
 
+      <!-- Designer flow -->
       <div class="p-6">
-        <div class="font-mono font-bold text-xs uppercase tracking-widest text-gray-500 mb-2">POWER USER</div>
-        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">LOCAL PATH</h3>
-        <p class="font-sans text-sm mb-6">Run the server on your machine. Only 3 env vars — COLLAB_KEY replaces 5 GitHub App credentials.</p>
-        <ol class="font-mono text-sm space-y-3">
-          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a> to get a COLLAB_KEY</li>
-          <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Set 3 env vars in <code class="bg-gray-100 px-1">.env</code></li>
-          <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Run <code class="bg-gray-100 px-1">npm run dev</code></li>
+        <div class="font-bold text-xs uppercase tracking-widest text-yellow-600 mb-3">DESIGNER</div>
+        <h3 class="font-bold text-2xl mb-5 border-b-2 border-black pb-3">Zero-friction invite</h3>
+        <ol class="text-sm space-y-4">
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">01</span>
+            <div>
+              <span class="font-bold">Click the invite link</span>
+              <p class="text-gray-500 text-xs mt-0.5">Sent by the developer from their dashboard</p>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">02</span>
+            <div>
+              <span class="font-bold">Enter your name</span>
+              <p class="text-gray-500 text-xs mt-0.5">No GitHub account required</p>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <span class="text-red-500 font-bold shrink-0">03</span>
+            <div>
+              <span class="font-bold">Copy the MCP config</span>
+              <p class="text-gray-500 text-xs mt-0.5">One click — done. You see <code class="bg-gray-100 px-1">designer-input</code> issues only</p>
+            </div>
+          </li>
         </ol>
-        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
-          <p class="font-mono text-xs text-gray-500 mb-1">.env (3 vars instead of 8)</p>
-          <pre class="font-mono text-xs">COLLAB_KEY=&lt;api_key&gt;
-GITHUB_REPO=owner/repo
-DEV_SECRET=random</pre>
-        </div>
       </div>
 
     </div>
   </section>
 
-  <!-- Roles -->
-  <section class="border-b-4 border-black">
-    <div class="grid grid-cols-1 md:grid-cols-2">
-
-      <div class="border-b-4 md:border-b-0 md:border-r-4 border-black p-6">
-        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">DEVELOPER</h3>
-        <ul class="font-mono text-sm space-y-2">
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Full issue access (all states)</li>
+  <!-- Role capabilities -->
+  <section class="border-b-4 border-black bg-black text-white px-6 py-10">
+    <h2 class="font-bold text-2xl mb-6">What each role can do</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-0 border-2 border-white">
+      <div class="border-b-2 md:border-b-0 md:border-r-2 border-white p-5">
+        <h3 class="font-bold text-lg mb-3 text-green-400">DEVELOPER</h3>
+        <ul class="text-sm space-y-2 text-gray-300">
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> All issues (open, closed, all states)</li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Add / remove labels</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Post comments as <code class="bg-gray-100 px-1">[Developer]</code></li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Comment as <code class="text-white bg-gray-800 px-1">[Developer]</code></li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Record decisions with rationale</li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Invite designers via one-time links</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Monitor active sessions</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Monitor + revoke designer sessions</li>
         </ul>
       </div>
-
-      <div class="p-6">
-        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">DESIGNER</h3>
-        <ul class="font-mono text-sm space-y-2">
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Sees only <code class="bg-gray-100 px-1">designer-input</code> issues</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Post comments as <code class="bg-gray-100 px-1">[Designer]</code></li>
+      <div class="p-5">
+        <h3 class="font-bold text-lg mb-3 text-yellow-400">DESIGNER</h3>
+        <ul class="text-sm space-y-2 text-gray-300">
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Only <code class="text-white bg-gray-800 px-1">designer-input</code> labeled issues</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Comment as <code class="text-white bg-gray-800 px-1">[Designer]</code></li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Record design decisions</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> View collaboration state</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Auth via GitHub OAuth (invite link)</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> View collaboration info</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> No GitHub account needed</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Server proxies all GitHub calls</li>
         </ul>
       </div>
-
     </div>
   </section>
 
-  <!-- MCP Config example -->
-  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
-    <h2 class="font-mono font-bold text-3xl mb-6">CLAUDE MCP CONFIG</h2>
-    <p class="font-mono text-sm text-gray-400 mb-4">After connecting, your setup page shows the exact snippet. It looks like this:</p>
-    <pre class="font-mono text-sm bg-gray-900 border-2 border-white p-5 overflow-x-auto max-w-2xl">{
-  "mcpServers": {
-    "github-collab": {
-      "url": "https://server-pink-six-81.vercel.app/mcp",
-      "headers": {
-        "Authorization": "Bearer &lt;api_key&gt;"
-      }
-    }
-  }
-}</pre>
-    <p class="font-mono text-sm text-gray-400 mt-4">
-      Designers get their own session token via the invite flow (<code class="text-white">get_collaboration_info</code> tool).
-    </p>
-  </section>
-
-  <!-- Tools reference -->
-  <section class="border-b-4 border-black px-6 py-10">
-    <h2 class="font-mono font-bold text-3xl mb-6">MCP TOOLS</h2>
+  <!-- Tools table -->
+  <section id="tools" class="border-b-4 border-black px-6 py-10">
+    <h2 class="font-bold text-2xl mb-6">MCP Tools</h2>
     <div class="overflow-x-auto">
-      <table class="w-full font-mono text-sm border-2 border-black">
+      <table class="w-full text-sm border-2 border-black">
         <thead class="bg-black text-white">
           <tr>
             <th class="text-left p-3 border-r-2 border-white">Tool</th>
             <th class="text-left p-3 border-r-2 border-white">Parameters</th>
-            <th class="text-left p-3 border-r-2 border-white">Available to</th>
+            <th class="text-left p-3 border-r-2 border-white">Role</th>
             <th class="text-left p-3">Description</th>
           </tr>
         </thead>
@@ -165,37 +175,37 @@ DEV_SECRET=random</pre>
           <tr class="border-t-2 border-black">
             <td class="p-3 border-r-2 border-black font-bold">list_issues</td>
             <td class="p-3 border-r-2 border-black text-xs">state?</td>
-            <td class="p-3 border-r-2 border-black">both</td>
-            <td class="p-3 text-xs">List issues. Designer sees only <code>designer-input</code> labeled issues.</td>
+            <td class="p-3 border-r-2 border-black text-xs">both</td>
+            <td class="p-3 text-xs">List issues. Designer sees only <code>designer-input</code> issues.</td>
           </tr>
           <tr class="border-t-2 border-black bg-gray-50">
             <td class="p-3 border-r-2 border-black font-bold">get_issue</td>
             <td class="p-3 border-r-2 border-black text-xs">issue_number</td>
-            <td class="p-3 border-r-2 border-black">both</td>
-            <td class="p-3 text-xs">Get issue details + comments with role prefixes parsed.</td>
+            <td class="p-3 border-r-2 border-black text-xs">both</td>
+            <td class="p-3 text-xs">Issue details + comments with role prefixes parsed.</td>
           </tr>
           <tr class="border-t-2 border-black">
             <td class="p-3 border-r-2 border-black font-bold">add_comment</td>
             <td class="p-3 border-r-2 border-black text-xs">issue_number, body</td>
-            <td class="p-3 border-r-2 border-black">both</td>
+            <td class="p-3 border-r-2 border-black text-xs">both</td>
             <td class="p-3 text-xs">Post a comment prefixed with [Developer] or [Designer].</td>
           </tr>
           <tr class="border-t-2 border-black bg-gray-50">
             <td class="p-3 border-r-2 border-black font-bold">record_decision</td>
             <td class="p-3 border-r-2 border-black text-xs">issue_number, decision, rationale?</td>
-            <td class="p-3 border-r-2 border-black">both</td>
+            <td class="p-3 border-r-2 border-black text-xs">both</td>
             <td class="p-3 text-xs">Record a structured decision block on an issue.</td>
           </tr>
           <tr class="border-t-2 border-black">
             <td class="p-3 border-r-2 border-black font-bold">get_collaboration_info</td>
             <td class="p-3 border-r-2 border-black text-xs">—</td>
-            <td class="p-3 border-r-2 border-black">both</td>
-            <td class="p-3 text-xs">Active sessions, pending invites, fresh invite URL for designers.</td>
+            <td class="p-3 border-r-2 border-black text-xs">both</td>
+            <td class="p-3 text-xs">Active sessions, pending invites, fresh invite URL.</td>
           </tr>
           <tr class="border-t-2 border-black bg-gray-50">
             <td class="p-3 border-r-2 border-black font-bold">label_issue</td>
             <td class="p-3 border-r-2 border-black text-xs">issue_number, label, action</td>
-            <td class="p-3 border-r-2 border-black text-red-600 font-bold">developer</td>
+            <td class="p-3 border-r-2 border-black text-xs text-red-600 font-bold">developer</td>
             <td class="p-3 text-xs">Add or remove a label from an issue.</td>
           </tr>
         </tbody>
@@ -203,41 +213,24 @@ DEV_SECRET=random</pre>
     </div>
   </section>
 
-  <!-- Architecture -->
-  <section class="border-b-4 border-black px-6 py-10">
-    <h2 class="font-mono font-bold text-3xl mb-6">ARCHITECTURE</h2>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-0 border-2 border-black">
-      <div class="border-b-2 md:border-b-0 md:border-r-2 border-black p-5">
-        <h3 class="font-mono font-bold mb-3">Hosted (Vercel) — apps/server</h3>
-        <ul class="font-mono text-xs space-y-1 text-gray-700">
-          <li><span class="text-black font-bold">GET  /connect</span> → GitHub App install redirect</li>
-          <li><span class="text-black font-bold">GET  /connect/callback</span> → issue API key, setup page</li>
-          <li><span class="text-black font-bold">POST /mcp</span> → stateless JSON-RPC handler</li>
-          <li><span class="text-black font-bold">GET  /invite</span> → designer OAuth redirect</li>
-          <li><span class="text-black font-bold">GET  /invite/callback</span> → create designer session</li>
-          <li><span class="text-black font-bold">POST /token</span> → installation token broker</li>
-        </ul>
-      </div>
-      <div class="p-5">
-        <h3 class="font-mono font-bold mb-3">Local — packages/server</h3>
-        <ul class="font-mono text-xs space-y-1 text-gray-700">
-          <li><span class="text-black font-bold">POST /mcp/developer</span> — developer MCP (SDK transport)</li>
-          <li><span class="text-black font-bold">POST /mcp/designer</span> — designer MCP (SDK transport)</li>
-          <li><span class="text-black font-bold">GET  /auth</span> — designer OAuth flow</li>
-          <li><span class="text-black font-bold">GET  /health</span> — health check</li>
-        </ul>
-        <div class="mt-4 border-t-2 border-black pt-4">
-          <h3 class="font-mono font-bold mb-1">Postgres (Vercel)</h3>
-          <p class="font-mono text-xs text-gray-700">users · designer_sessions · invite_codes</p>
-        </div>
-      </div>
+  <!-- CTA -->
+  <section class="border-b-4 border-black px-6 py-12 bg-black text-white text-center">
+    <h2 class="font-bold text-3xl mb-4">Ready to connect?</h2>
+    <p class="text-gray-400 text-sm mb-8">Install the GitHub App, get your API key, and start collaborating in under a minute.</p>
+    <div class="flex flex-wrap gap-4 justify-center">
+      <a href="/connect" class="font-bold text-base bg-white text-black px-8 py-3 border-4 border-white no-underline hover:bg-black hover:text-white hover:border-white">
+        Connect GitHub App →
+      </a>
+      <a href="/dashboard" class="font-bold text-base bg-black text-white px-8 py-3 border-4 border-white no-underline hover:bg-white hover:text-black">
+        Open Dashboard
+      </a>
     </div>
   </section>
 
   <!-- Footer -->
-  <footer class="px-6 py-5 border-t-2 border-black flex justify-between items-center font-mono text-xs">
+  <footer class="px-6 py-5 border-t-2 border-black flex justify-between items-center text-xs text-gray-500">
     <span>github-issue-collab</span>
-    <span class="text-gray-500">GET /health → { status: "ok" }</span>
+    <span><a href="/health" class="no-underline hover:underline">/health</a> · <a href="/dashboard" class="no-underline hover:underline">dashboard</a></span>
   </footer>
 
 </body>
