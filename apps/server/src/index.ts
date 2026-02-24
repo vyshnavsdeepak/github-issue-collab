@@ -10,6 +10,7 @@ import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 
 const app = express()
 app.use(express.json())
+app.use(express.urlencoded({ extended: false }))
 app.use(express.static(join(__dirname, '../public')))
 
 function loadPrivateKey(): string {
@@ -42,7 +43,7 @@ app.get('/invite', (req, res) => {
   void handleInvite(req, res)
 })
 
-app.get('/invite/callback', (req, res) => {
+app.post('/invite/callback', (req, res) => {
   void handleInviteCallback(req, res)
 })
 
@@ -110,7 +111,7 @@ if (!process.env.VERCEL) {
     console.log(`  GET  /connect`)
     console.log(`  GET  /connect/callback`)
     console.log(`  GET  /invite`)
-    console.log(`  GET  /invite/callback`)
+    console.log(`  POST /invite/callback`)
     console.log(`  POST /mcp   (hosted MCP)`)
     console.log(`  POST /token (installation token broker)`)
   })

@@ -10,7 +10,6 @@ import {
   addComment,
   addLabel,
   removeLabel,
-  getAuthUser,
 } from './github.js'
 
 type Role = 'developer' | 'designer'
@@ -362,37 +361,65 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     return
   }
 
-  const clientId = process.env.GITHUB_APP_CLIENT_ID
-  if (!clientId) {
-    res.status(500).send('GITHUB_APP_CLIENT_ID not configured')
-    return
-  }
+  const ownerUser = await db.getUserById(inviteRecord.user_id)
 
-  const baseUrl = getBaseUrl(req)
-  const redirectUri = `${baseUrl}/invite/callback`
-  const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(code)}&scope=user:email`
-  res.redirect(authUrl)
+  const inviterName = ownerUser?.github_user ?? 'a developer'
+  const repoName = ownerUser?.repo ?? 'their repository'
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Designer Invite — github-issue-collab</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
+    pre, code { font-family: monospace; }
+    input { outline: none; }
+  </style>
+</head>
+<body class="bg-white text-black font-mono p-0">
+  <header class="border-b-4 border-black px-6 py-5">
+    <h1 class="font-bold text-2xl">github-issue-collab</h1>
+  </header>
+  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
+    <p class="text-xs uppercase tracking-widest mb-3 text-yellow-400">Designer Invite</p>
+    <h2 class="font-bold text-4xl mb-2">You've been invited</h2>
+    <p class="text-gray-300 text-lg mt-2">
+      <strong>${inviterName}</strong> has invited you to collaborate on <strong>${repoName}</strong>
+    </p>
+  </section>
+  <section class="px-6 py-10">
+    <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
+    <form method="POST" action="/invite/callback" class="flex flex-col gap-4 max-w-sm">
+      <input type="hidden" name="code" value="${code}">
+      <div>
+        <label class="text-xs uppercase tracking-widest block mb-2">Your name or handle</label>
+        <input type="text" name="name" required placeholder="e.g. alice" class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
+      </div>
+      <button type="submit" class="bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black">
+        Accept Invite →
+      </button>
+    </form>
+  </section>
+</body>
+</html>`)
 }
 
+// Handles POST from the invite landing page form (no GitHub OAuth required)
 export async function handleInviteCallback(req: Request, res: Response): Promise<void> {
-  const oauthCode = req.query['code'] as string | undefined
-  const state = req.query['state'] as string | undefined
+  const body = req.body as Record<string, unknown> | undefined
+  const code = body?.['code'] as string | undefined
+  const name = ((body?.['name'] as string | undefined) ?? '').trim()
 
-  if (!oauthCode || !state) {
-    res.status(400).send('Missing code or state')
-    return
-  }
-
-  const clientId = process.env.GITHUB_APP_CLIENT_ID
-  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET
-  if (!clientId || !clientSecret) {
-    res.status(500).send('GitHub OAuth not configured — set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET')
+  if (!code || !name) {
+    res.status(400).send('Missing code or name')
     return
   }
 
   let inviteRecord: Awaited<ReturnType<typeof db.getInviteCode>>
   try {
-    inviteRecord = await db.getInviteCode(state)
+    inviteRecord = await db.getInviteCode(code)
   } catch (err) {
     res.status(500).send(`DB error: ${err instanceof Error ? err.message : String(err)}`)
     return
@@ -404,26 +431,14 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
   }
 
   try {
-    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code: oauthCode }),
-    })
-    const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string }
-    if (!tokenData.access_token) {
-      res.status(400).send(`OAuth error: ${tokenData.error ?? 'unknown'}`)
-      return
-    }
-
-    const user = await getAuthUser(tokenData.access_token)
     const sessionToken = randomUUID()
 
     await db.createDesignerSession({
       userId: inviteRecord.user_id,
       token: sessionToken,
-      githubUser: user.login,
+      githubUser: name,
     })
-    await db.markInviteUsed(state)
+    await db.markInviteUsed(code)
 
     const baseUrl = getBaseUrl(req)
     const mcpConfig = JSON.stringify(
@@ -439,11 +454,13 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
       2
     )
 
+    const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${sessionToken}" \\\n  ${baseUrl}/mcp`
+
     res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Designer Auth Complete — github-issue-collab</title>
+  <title>Designer Access Ready — github-issue-collab</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
@@ -455,16 +472,33 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     <h1 class="font-bold text-2xl">github-issue-collab</h1>
   </header>
   <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
-    <p class="text-xs uppercase tracking-widest mb-3 text-green-400">✓ Auth Complete</p>
-    <h2 class="font-bold text-4xl mb-2">Welcome, ${user.login}</h2>
-    <p class="text-gray-400 text-sm">You're authenticated as a designer. Add the config below to Claude.</p>
+    <p class="text-xs uppercase tracking-widest mb-3 text-green-400">✓ Access Ready</p>
+    <h2 class="font-bold text-4xl mb-2">Welcome, ${name}</h2>
+    <p class="text-gray-400 text-sm">Add the config below to Claude to get started.</p>
+  </section>
+  <section class="px-6 py-10 border-b-4 border-black">
+    <h3 class="font-bold text-xl mb-2">Option A — CLI command</h3>
+    <p class="text-sm text-gray-600 mb-3">Run this in your terminal:</p>
+    <div class="flex items-start gap-3 mb-2">
+      <pre id="cli-cmd" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${cliCommand}</pre>
+      <button onclick="copyEl('cli-cmd', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
+    </div>
   </section>
   <section class="px-6 py-10">
-    <h3 class="font-bold text-xl mb-4">Claude MCP Config</h3>
-    <p class="text-sm text-gray-600 mb-3">Add to your Claude Code MCP settings or <code>claude_desktop_config.json</code>:</p>
-    <pre class="bg-black text-white text-xs p-5 overflow-x-auto mb-4">${mcpConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+    <h3 class="font-bold text-xl mb-2">Option B — JSON config</h3>
+    <p class="text-sm text-gray-600 mb-3">Add to <code>claude_desktop_config.json</code> or Claude Code MCP settings:</p>
+    <div class="flex items-start gap-3 mb-4">
+      <pre id="mcp-config" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${mcpConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+      <button onclick="copyEl('mcp-config', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
+    </div>
     <p class="text-xs text-gray-500">You have designer role: you'll see only <code class="bg-gray-100 px-1">designer-input</code> labeled issues.</p>
   </section>
+  <script>
+function copyEl(id, btn) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
+    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+}
+  </script>
 </body>
 </html>`)
   } catch (err) {

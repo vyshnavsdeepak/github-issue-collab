@@ -116,6 +116,7 @@ function setupPage(params: { apiKey: string; githubUser: string; baseUrl: string
     null,
     2
   )
+  const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${apiKey}" \\\n  ${baseUrl}/mcp`
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -152,8 +153,17 @@ function setupPage(params: { apiKey: string; githubUser: string; baseUrl: string
       <h3 class="font-bold text-2xl mb-4">Hosted Path</h3>
       <p class="text-sm mb-6">Zero local setup. Copy the MCP config below and paste it into your Claude settings. Done.</p>
 
-      <p class="text-xs text-gray-500 mb-2">Add to Claude Code MCP settings (<code>claude mcp add</code>) or <code>claude_desktop_config.json</code>:</p>
-      <pre class="bg-black text-white text-xs p-4 overflow-x-auto mb-4">${hostedConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+      <p class="text-xs text-gray-500 mb-2">Option A — CLI command:</p>
+      <div class="flex items-start gap-3 mb-4">
+        <pre id="cli-cmd" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${cliCommand}</pre>
+        <button onclick="copyEl('cli-cmd', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
+      </div>
+
+      <p class="text-xs text-gray-500 mb-2">Option B — JSON config for <code>claude_desktop_config.json</code>:</p>
+      <div class="flex items-start gap-3 mb-4">
+        <pre id="hosted-config" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${hostedConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+        <button onclick="copyEl('hosted-config', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
+      </div>
 
       <p class="text-xs text-gray-500">Your API key: <code class="bg-gray-100 px-1">${apiKey}</code></p>
     </div>
@@ -179,6 +189,13 @@ DEV_SECRET=change-me-to-something-random</pre>
     <a href="/">← Back to home</a>
     <span class="text-gray-500">installation_id: ${installationId}</span>
   </footer>
+
+  <script>
+function copyEl(id, btn) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
+    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+}
+  </script>
 
 </body>
 </html>`
