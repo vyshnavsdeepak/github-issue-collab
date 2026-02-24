@@ -37,7 +37,7 @@
   <!-- Header -->
   <header class="border-b-4 border-black px-6 py-5 flex items-baseline justify-between">
     <h1 class="font-mono font-bold text-2xl tracking-tight">github-issue-collab</h1>
-    <span class="font-mono text-sm border-2 border-black px-2 py-0.5">v0.0.1 / local MCP</span>
+    <span class="font-mono text-sm border-2 border-black px-2 py-0.5">v0.0.1</span>
   </header>
 
   <!-- Hero -->
@@ -49,14 +49,57 @@
         Through Claude.<br>
         Together.
       </h2>
-      <p class="text-lg font-sans max-w-xl leading-relaxed">
-        A local MCP server that lets developers and designers interact with GitHub issues directly inside Claude.
-        Developers get full access. Designers see only what's relevant.
+      <p class="text-lg font-sans max-w-xl leading-relaxed mb-8">
+        An MCP server that lets developers and designers interact with GitHub issues directly inside Claude.
+        Hosted or local — your choice.
       </p>
+      <a href="/connect" class="font-mono font-bold text-lg bg-white text-black px-6 py-3 border-4 border-white inline-block no-underline hover:bg-black hover:text-white hover:border-white">
+        Connect your repo →
+      </a>
     </div>
   </section>
 
-  <!-- Two-column: how it works -->
+  <!-- Two setup paths -->
+  <section class="border-b-4 border-black">
+    <div class="grid grid-cols-1 md:grid-cols-2">
+
+      <div class="border-b-4 md:border-b-0 md:border-r-4 border-black p-6">
+        <div class="font-mono font-bold text-xs uppercase tracking-widest text-green-600 mb-2">RECOMMENDED</div>
+        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">HOSTED PATH</h3>
+        <p class="font-sans text-sm mb-6">Zero local setup. Install the GitHub App, get an API key, paste one JSON snippet into Claude. No process to run.</p>
+        <ol class="font-mono text-sm space-y-3">
+          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a></li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Copy the MCP config from the setup page</li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Paste into Claude — done</li>
+        </ol>
+        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
+          <p class="font-mono text-xs text-gray-500 mb-1">MCP endpoint</p>
+          <code class="font-mono text-sm">POST /mcp</code><br>
+          <code class="font-mono text-xs text-gray-600">Authorization: Bearer &lt;api_key&gt;</code>
+        </div>
+      </div>
+
+      <div class="p-6">
+        <div class="font-mono font-bold text-xs uppercase tracking-widest text-gray-500 mb-2">POWER USER</div>
+        <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">LOCAL PATH</h3>
+        <p class="font-sans text-sm mb-6">Run the server on your machine. Only 3 env vars — COLLAB_KEY replaces 5 GitHub App credentials.</p>
+        <ol class="font-mono text-sm space-y-3">
+          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a> to get a COLLAB_KEY</li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Set 3 env vars in <code class="bg-gray-100 px-1">.env</code></li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Run <code class="bg-gray-100 px-1">npm run dev</code></li>
+        </ol>
+        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
+          <p class="font-mono text-xs text-gray-500 mb-1">.env (3 vars instead of 8)</p>
+          <pre class="font-mono text-xs">COLLAB_KEY=&lt;api_key&gt;
+GITHUB_REPO=owner/repo
+DEV_SECRET=random</pre>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Roles -->
   <section class="border-b-4 border-black">
     <div class="grid grid-cols-1 md:grid-cols-2">
 
@@ -70,11 +113,6 @@
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Invite designers via one-time links</li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Monitor active sessions</li>
         </ul>
-        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
-          <p class="font-mono text-xs text-gray-500 mb-1">MCP endpoint</p>
-          <code class="font-mono text-sm">POST /mcp/developer</code><br>
-          <code class="font-mono text-xs text-gray-600">Authorization: Bearer $DEV_SECRET</code>
-        </div>
       </div>
 
       <div class="p-6">
@@ -84,79 +122,29 @@
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Post comments as <code class="bg-gray-100 px-1">[Designer]</code></li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Record design decisions</li>
           <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> View collaboration state</li>
-          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Auth via GitHub OAuth</li>
+          <li class="flex gap-2"><span class="text-red-500 font-bold">→</span> Auth via GitHub OAuth (invite link)</li>
         </ul>
-        <div class="mt-6 border-2 border-black p-3 bg-gray-50">
-          <p class="font-mono text-xs text-gray-500 mb-1">MCP endpoint</p>
-          <code class="font-mono text-sm">POST /mcp/designer</code><br>
-          <code class="font-mono text-xs text-gray-600">Authorization: Bearer &lt;session-token&gt;</code>
-        </div>
       </div>
 
     </div>
   </section>
 
-  <!-- Setup steps -->
-  <section class="border-b-4 border-black px-6 py-10">
-    <h2 class="font-mono font-bold text-3xl mb-8">SETUP</h2>
-
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-0 border-2 border-black">
-
-      <div class="border-b-2 md:border-b-0 md:border-r-2 border-black p-5">
-        <div class="font-mono font-bold text-4xl text-red-500 mb-3">01</div>
-        <h3 class="font-mono font-bold text-lg mb-3">GitHub App</h3>
-        <p class="text-sm mb-4">Create a GitHub App with Issues (read/write) permission. Set the OAuth callback URL.</p>
-        <code class="font-mono text-xs bg-black text-white px-2 py-1 block">
-          /auth/callback URL:<br>
-          http://localhost:3000/auth/callback
-        </code>
-      </div>
-
-      <div class="border-b-2 md:border-b-0 md:border-r-2 border-black p-5">
-        <div class="font-mono font-bold text-4xl text-red-500 mb-3">02</div>
-        <h3 class="font-mono font-bold text-lg mb-3">Configure .env</h3>
-        <pre class="font-mono text-xs bg-black text-white p-3 overflow-x-auto">GITHUB_APP_ID=...
-GITHUB_APP_INSTALLATION_ID=...
-GITHUB_REPO=owner/repo
-GITHUB_APP_PRIVATE_KEY_PATH=./key.pem
-GITHUB_APP_CLIENT_ID=...
-GITHUB_APP_CLIENT_SECRET=...
-DEV_SECRET=random-secret
-PORT=3000</pre>
-      </div>
-
-      <div class="p-5">
-        <div class="font-mono font-bold text-4xl text-red-500 mb-3">03</div>
-        <h3 class="font-mono font-bold text-lg mb-3">Start &amp; Connect</h3>
-        <pre class="font-mono text-xs bg-black text-white p-3 mb-3"># Start the server
-npm run dev
-
-# Generate designer invite
-tsx apps/cli/src/index.ts invite
-
-# Check sessions
-tsx apps/cli/src/index.ts status</pre>
-      </div>
-
-    </div>
-  </section>
-
-  <!-- MCP Config -->
+  <!-- MCP Config example -->
   <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
     <h2 class="font-mono font-bold text-3xl mb-6">CLAUDE MCP CONFIG</h2>
-    <p class="font-mono text-sm text-gray-400 mb-4">Add to <code class="text-white">claude_desktop_config.json</code> or your Claude Code MCP settings:</p>
+    <p class="font-mono text-sm text-gray-400 mb-4">After connecting, your setup page shows the exact snippet. It looks like this:</p>
     <pre class="font-mono text-sm bg-gray-900 border-2 border-white p-5 overflow-x-auto max-w-2xl">{
   "mcpServers": {
-    "github-collab-dev": {
-      "url": "http://localhost:3000/mcp/developer",
+    "github-collab": {
+      "url": "https://server-pink-six-81.vercel.app/mcp",
       "headers": {
-        "Authorization": "Bearer &lt;DEV_SECRET&gt;"
+        "Authorization": "Bearer &lt;api_key&gt;"
       }
     }
   }
 }</pre>
     <p class="font-mono text-sm text-gray-400 mt-4">
-      Designers connect to <code class="text-white">/mcp/designer</code> with their session token obtained via the invite flow.
+      Designers get their own session token via the invite flow (<code class="text-white">get_collaboration_info</code> tool).
     </p>
   </section>
 
@@ -202,7 +190,7 @@ tsx apps/cli/src/index.ts status</pre>
             <td class="p-3 border-r-2 border-black font-bold">get_collaboration_info</td>
             <td class="p-3 border-r-2 border-black text-xs">—</td>
             <td class="p-3 border-r-2 border-black">both</td>
-            <td class="p-3 text-xs">Active sessions, pending invites, server URLs.</td>
+            <td class="p-3 text-xs">Active sessions, pending invites, fresh invite URL for designers.</td>
           </tr>
           <tr class="border-t-2 border-black bg-gray-50">
             <td class="p-3 border-r-2 border-black font-bold">label_issue</td>
@@ -220,26 +208,27 @@ tsx apps/cli/src/index.ts status</pre>
     <h2 class="font-mono font-bold text-3xl mb-6">ARCHITECTURE</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-0 border-2 border-black">
       <div class="border-b-2 md:border-b-0 md:border-r-2 border-black p-5">
-        <h3 class="font-mono font-bold mb-3">packages/server</h3>
+        <h3 class="font-mono font-bold mb-3">Hosted (Vercel) — apps/server</h3>
         <ul class="font-mono text-xs space-y-1 text-gray-700">
-          <li><span class="text-black font-bold">index.ts</span> — Express app + MCP wiring</li>
-          <li><span class="text-black font-bold">tools.ts</span> — 6 MCP tools (role-scoped)</li>
-          <li><span class="text-black font-bold">auth.ts</span> — OAuth flow + middleware</li>
-          <li><span class="text-black font-bold">db.ts</span> — SQLite sessions + invites</li>
-          <li><span class="text-black font-bold">github.ts</span> — GitHub API + token cache</li>
+          <li><span class="text-black font-bold">GET  /connect</span> → GitHub App install redirect</li>
+          <li><span class="text-black font-bold">GET  /connect/callback</span> → issue API key, setup page</li>
+          <li><span class="text-black font-bold">POST /mcp</span> → stateless JSON-RPC handler</li>
+          <li><span class="text-black font-bold">GET  /invite</span> → designer OAuth redirect</li>
+          <li><span class="text-black font-bold">GET  /invite/callback</span> → create designer session</li>
+          <li><span class="text-black font-bold">POST /token</span> → installation token broker</li>
         </ul>
       </div>
       <div class="p-5">
-        <h3 class="font-mono font-bold mb-3">apps/cli</h3>
+        <h3 class="font-mono font-bold mb-3">Local — packages/server</h3>
         <ul class="font-mono text-xs space-y-1 text-gray-700">
-          <li><span class="text-black font-bold">serve</span> — start MCP server</li>
-          <li><span class="text-black font-bold">invite</span> — generate designer invite</li>
-          <li><span class="text-black font-bold">status</span> — show active sessions</li>
-          <li><span class="text-black font-bold">setup</span> — print setup instructions</li>
+          <li><span class="text-black font-bold">POST /mcp/developer</span> — developer MCP (SDK transport)</li>
+          <li><span class="text-black font-bold">POST /mcp/designer</span> — designer MCP (SDK transport)</li>
+          <li><span class="text-black font-bold">GET  /auth</span> — designer OAuth flow</li>
+          <li><span class="text-black font-bold">GET  /health</span> — health check</li>
         </ul>
         <div class="mt-4 border-t-2 border-black pt-4">
-          <h3 class="font-mono font-bold mb-3">apps/server (Vercel)</h3>
-          <p class="font-mono text-xs text-gray-700">Token broker — deployed separately, not part of local server.</p>
+          <h3 class="font-mono font-bold mb-1">Postgres (Vercel)</h3>
+          <p class="font-mono text-xs text-gray-700">users · designer_sessions · invite_codes</p>
         </div>
       </div>
     </div>

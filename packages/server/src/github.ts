@@ -45,14 +45,37 @@ export async function getInstallationToken(
   if (tokenCache && tokenCache.expiresAt - Date.now() > 5 * 60 * 1000) {
     return tokenCache.token
   }
-  const jwt = createJWT(appId, privateKey)
-  const data = await ghFetch<{ token: string }>(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
-    jwt,
-    { method: 'POST' }
-  )
-  tokenCache = { token: data.token, expiresAt: Date.now() + 60 * 60 * 1000 }
-  return data.token
+
+  let token: string
+
+  if (process.env.COLLAB_KEY && !privateKey) {
+    // Power-user path: fetch installation token from hosted server using COLLAB_KEY
+    const collabUrl = process.env.COLLAB_URL ?? 'https://server-pink-six-81.vercel.app'
+    const res = await fetch(`${collabUrl}/token`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.COLLAB_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Token endpoint error ${res.status}: ${text}`)
+    }
+    const data = (await res.json()) as { token: string }
+    token = data.token
+  } else {
+    const jwt = createJWT(appId, privateKey)
+    const data = await ghFetch<{ token: string }>(
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
+      jwt,
+      { method: 'POST' }
+    )
+    token = data.token
+  }
+
+  tokenCache = { token, expiresAt: Date.now() + 60 * 60 * 1000 }
+  return token
 }
 
 export async function addComment(params: {

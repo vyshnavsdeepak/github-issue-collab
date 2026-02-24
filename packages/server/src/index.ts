@@ -20,14 +20,20 @@ function loadPrivateKey(): string {
 }
 
 function buildContext(port: number): ServerContext {
-  const appId = process.env.GITHUB_APP_ID
-  const installationId = process.env.GITHUB_APP_INSTALLATION_ID
   const githubRepo = process.env.GITHUB_REPO
-  if (!appId) throw new Error('GITHUB_APP_ID is required')
-  if (!installationId) throw new Error('GITHUB_APP_INSTALLATION_ID is required')
   if (!githubRepo) throw new Error('GITHUB_REPO is required (format: owner/repo)')
   const [owner, repo] = githubRepo.split('/')
   if (!owner || !repo) throw new Error('GITHUB_REPO must be in format owner/repo')
+
+  // Power-user path: COLLAB_KEY fetches installation tokens from the hosted server
+  if (process.env.COLLAB_KEY) {
+    return { appId: '', privateKey: '', installationId: '', repo: { owner, repo }, db, port }
+  }
+
+  const appId = process.env.GITHUB_APP_ID
+  const installationId = process.env.GITHUB_APP_INSTALLATION_ID
+  if (!appId) throw new Error('GITHUB_APP_ID is required (or set COLLAB_KEY)')
+  if (!installationId) throw new Error('GITHUB_APP_INSTALLATION_ID is required (or set COLLAB_KEY)')
   return {
     appId,
     privateKey: loadPrivateKey(),

@@ -103,3 +103,73 @@ export async function listIssueComments(params: {
     token
   )
 }
+
+export async function addComment(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+  body: string
+}): Promise<IssueComment> {
+  const { owner, repo, issueNumber, token, body } = params
+  return ghFetch<IssueComment>(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    token,
+    { method: 'POST', body: JSON.stringify({ body }), headers: { 'Content-Type': 'application/json' } }
+  )
+}
+
+export async function addLabel(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+  label: string
+}): Promise<void> {
+  const { owner, repo, issueNumber, token, label } = params
+  await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
+    token,
+    { method: 'POST', body: JSON.stringify({ labels: [label] }), headers: { 'Content-Type': 'application/json' } }
+  )
+}
+
+export async function removeLabel(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+  label: string
+}): Promise<void> {
+  const { owner, repo, issueNumber, token, label } = params
+  await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
+    token,
+    { method: 'DELETE' }
+  )
+}
+
+export async function getAppInstallation(installationId: string, appId: string, privateKey: string): Promise<{ account: { login: string } }> {
+  const jwt = createJWT(appId, privateKey)
+  return ghFetch<{ account: { login: string } }>(
+    `https://api.github.com/app/installations/${installationId}`,
+    jwt
+  )
+}
+
+export async function getAuthUser(token: string): Promise<{ login: string }> {
+  return ghFetch<{ login: string }>('https://api.github.com/user', token)
+}
+
+export async function getInstallationRepos(
+  installationId: string,
+  appId: string,
+  privateKey: string
+): Promise<Array<{ full_name: string }>> {
+  const token = await getInstallationToken(installationId, appId, privateKey)
+  const data = await ghFetch<{ repositories: Array<{ full_name: string }> }>(
+    `https://api.github.com/installation/repositories?per_page=100`,
+    token
+  )
+  return data.repositories
+}
