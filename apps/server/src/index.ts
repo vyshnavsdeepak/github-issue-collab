@@ -1,11 +1,13 @@
 import 'dotenv/config'
 import { readFileSync } from 'fs'
+import { join } from 'path'
 import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
 
 const app = express()
 app.use(express.json())
+app.use(express.static(join(__dirname, '../public')))
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
