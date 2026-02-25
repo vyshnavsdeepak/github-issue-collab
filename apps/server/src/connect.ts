@@ -5,6 +5,7 @@ import {
   createUser,
   getUserByInstallationId,
   getUserByApiKey,
+  getUserByGithubUser,
   updateUserGithubUser,
   updateUserRepo,
   listSessionsForUser,
@@ -12,7 +13,7 @@ import {
   createInviteCode,
   revokeDesignerSession,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -39,6 +40,14 @@ function timeAgo(dateStr: string | null): string {
   if (hrs < 24) return `${hrs}h ago`
   const days = Math.floor(hrs / 24)
   return `${days}d ago`
+}
+
+function parseCookie(req: Request, name: string): string | undefined {
+  const header = req.headers.cookie ?? ''
+  for (const part of header.split(';')) {
+    const [k, v] = part.trim().split('=')
+    if (k === name) return decodeURIComponent(v ?? '')
+  }
 }
 
 export function handleConnect(_req: Request, res: Response): void {
@@ -111,13 +120,12 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
     return
   }
 
-  res.redirect(`/dashboard?key=${encodeURIComponent(user.api_key)}`)
+  res.redirect('/dashboard')
 }
 
 export async function handleDashboard(req: Request, res: Response): Promise<void> {
-  const apiKey = req.query['key'] as string | undefined
+  const apiKey = parseCookie(req, 'gh_session')
 
-  // No key — show login form
   if (!apiKey) {
     res.send(loginPage())
     return
@@ -125,7 +133,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   const user = await getUserByApiKey(apiKey)
   if (!user) {
-    res.status(401).send(loginPage('Invalid API key.'))
+    res.status(401).send(loginPage('Session invalid. Please sign in again.'))
     return
   }
 
@@ -150,7 +158,6 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         <td class="p-3 border-r-2 border-black text-xs ${s.last_seen ? '' : 'text-gray-400'}">${timeAgo(s.last_seen)}</td>
         <td class="p-3">
           <form method="POST" action="/dashboard/revoke" class="inline">
-            <input type="hidden" name="key" value="${esc(apiKey)}">
             <input type="hidden" name="session_id" value="${esc(s.id)}">
             <button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Revoke</button>
           </form>
@@ -196,6 +203,9 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <div class="flex items-center gap-4 text-sm">
       <span class="text-gray-500">${esc(user.github_user ?? '')} / ${esc(user.repo ?? 'no repo')}</span>
       <span class="border-2 border-black px-2 py-0.5 text-xs">dashboard</span>
+      <form method="POST" action="/dashboard/logout" class="inline">
+        <button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Sign out</button>
+      </form>
     </div>
   </header>
 
@@ -210,7 +220,6 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
       <form method="POST" action="/dashboard/invite" class="inline">
-        <input type="hidden" name="key" value="${esc(apiKey)}">
         <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
       </form>
     </div>
@@ -283,29 +292,109 @@ function copyEl(id, btn) {
 </html>`)
 }
 
+export function handleDashboardLogin(req: Request, res: Response): void {
+  const clientId = process.env.GITHUB_APP_CLIENT_ID
+  if (!clientId) {
+    res.status(500).send('GITHUB_APP_CLIENT_ID not configured')
+    return
+  }
+  const baseUrl = getBaseUrl(req)
+  const redirectUri = `${baseUrl}/dashboard/callback`
+  const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user%3Aemail`
+  res.redirect(authUrl)
+}
+
+export async function handleDashboardCallback(req: Request, res: Response): Promise<void> {
+  const code = req.query['code'] as string | undefined
+  if (!code) {
+    res.status(400).send('Missing code')
+    return
+  }
+
+  const clientId = process.env.GITHUB_APP_CLIENT_ID
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    res.status(500).send('GitHub OAuth credentials not configured')
+    return
+  }
+
+  // Exchange code for access token
+  let accessToken: string
+  try {
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+    })
+    const tokenData = await tokenRes.json() as { access_token?: string; error?: string }
+    if (!tokenData.access_token) {
+      res.status(400).send(`OAuth error: ${tokenData.error ?? 'no access_token'}`)
+      return
+    }
+    accessToken = tokenData.access_token
+  } catch (err) {
+    res.status(502).send(`Token exchange error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  // Get GitHub user login
+  let login: string
+  try {
+    const ghUser = await getAuthUser(accessToken)
+    login = ghUser.login
+  } catch (err) {
+    res.status(502).send(`GitHub user error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  // Look up developer in DB
+  let user
+  try {
+    user = await getUserByGithubUser(login)
+  } catch (err) {
+    res.status(500).send(`DB error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  if (!user) {
+    res.redirect('/connect')
+    return
+  }
+
+  const maxAge = 30 * 24 * 60 * 60
+  res.setHeader('Set-Cookie', `gh_session=${encodeURIComponent(user.api_key)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
+  res.redirect('/dashboard')
+}
+
+export function handleDashboardLogout(_req: Request, res: Response): void {
+  res.setHeader('Set-Cookie', 'gh_session=; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Path=/')
+  res.redirect('/')
+}
+
 export async function handleCreateInvite(req: Request, res: Response): Promise<void> {
-  const body = req.body as Record<string, unknown>
-  const apiKey = body['key'] as string | undefined
-  if (!apiKey) { res.status(400).send('Missing key'); return }
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
 
   const user = await getUserByApiKey(apiKey)
-  if (!user) { res.status(401).send('Invalid API key'); return }
+  if (!user) { res.status(401).send('Invalid session'); return }
 
   await createInviteCode(user.id)
-  res.redirect(`/dashboard?key=${encodeURIComponent(apiKey)}`)
+  res.redirect('/dashboard')
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
   const body = req.body as Record<string, unknown>
-  const apiKey = body['key'] as string | undefined
   const sessionId = body['session_id'] as string | undefined
-  if (!apiKey || !sessionId) { res.status(400).send('Missing params'); return }
+
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+  if (!sessionId) { res.status(400).send('Missing session_id'); return }
 
   const user = await getUserByApiKey(apiKey)
-  if (!user) { res.status(401).send('Invalid API key'); return }
+  if (!user) { res.status(401).send('Invalid session'); return }
 
   await revokeDesignerSession(sessionId)
-  res.redirect(`/dashboard?key=${encodeURIComponent(apiKey)}`)
+  res.redirect('/dashboard')
 }
 
 function esc(str: string): string {
@@ -324,7 +413,6 @@ function loginPage(error?: string): string {
     * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
     a { text-decoration: underline; }
     a:hover { background: #000; color: #fff; }
-    input { outline: none; }
   </style>
 </head>
 <body class="bg-white text-black font-mono min-h-screen flex flex-col">
@@ -335,22 +423,15 @@ function loginPage(error?: string): string {
     <div class="w-full max-w-sm border-4 border-black">
       <div class="bg-black text-white px-6 py-5">
         <h2 class="font-bold text-xl">Developer Login</h2>
-        <p class="text-gray-400 text-xs mt-1">Enter your API key to access your dashboard</p>
+        <p class="text-gray-400 text-xs mt-1">Sign in with your GitHub account</p>
       </div>
       <div class="p-6">
         ${error ? `<p class="text-red-600 text-sm font-bold mb-4 border-2 border-red-600 px-3 py-2">${esc(error)}</p>` : ''}
-        <form method="GET" action="/dashboard" class="flex flex-col gap-4">
-          <div>
-            <label class="text-xs uppercase tracking-widest block mb-2">API Key</label>
-            <input type="text" name="key" required placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              class="border-2 border-black px-3 py-2 text-sm w-full font-mono bg-white">
-          </div>
-          <button type="submit" class="bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black">
-            Open Dashboard →
-          </button>
-        </form>
+        <a href="/dashboard/login" class="block bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black text-center no-underline">
+          Sign in with GitHub →
+        </a>
         <p class="text-xs text-gray-500 mt-6">
-          Don't have an API key? <a href="/connect">Connect your GitHub repo →</a>
+          Don't have access yet? <a href="/connect">Connect your GitHub repo →</a>
         </p>
       </div>
     </div>

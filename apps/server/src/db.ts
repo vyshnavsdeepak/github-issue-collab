@@ -85,6 +85,12 @@ export async function getUserByApiKey(apiKey: string): Promise<User | null> {
   return (rows[0] as User) ?? null
 }
 
+export async function getUserByGithubUser(githubUser: string): Promise<User | null> {
+  const db = sql()
+  const rows = await db`SELECT * FROM users WHERE github_user = ${githubUser} LIMIT 1`
+  return (rows[0] as User) ?? null
+}
+
 export async function getUserByInstallationId(installationId: string): Promise<User | null> {
   const db = sql()
   const rows = await db`SELECT * FROM users WHERE installation_id = ${installationId} LIMIT 1`

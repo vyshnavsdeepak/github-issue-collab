@@ -5,7 +5,7 @@ import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
 import { getUserByApiKey } from './db'
-import { handleConnect, handleConnectCallback, handleDashboard, handleCreateInvite, handleRevokeSession } from './connect'
+import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleRevokeSession } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 
 const app = express()
@@ -41,6 +41,18 @@ app.get('/connect/callback', (req, res) => {
 
 app.get('/dashboard', (req, res) => {
   void handleDashboard(req, res)
+})
+
+app.get('/dashboard/login', (req, res) => {
+  handleDashboardLogin(req, res)
+})
+
+app.get('/dashboard/callback', (req, res) => {
+  void handleDashboardCallback(req, res)
+})
+
+app.post('/dashboard/logout', (req, res) => {
+  handleDashboardLogout(req, res)
 })
 
 app.post('/dashboard/invite', (req, res) => {
