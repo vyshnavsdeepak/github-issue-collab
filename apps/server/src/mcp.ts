@@ -19,6 +19,7 @@ interface AuthContext {
   installationId: string
   repo: { owner: string; repo: string }
   userId: string
+  inviteCode: string | null
 }
 
 function loadPrivateKey(): string {
@@ -47,7 +48,7 @@ async function resolveAuth(req: Request): Promise<AuthContext | null> {
     if (!user.repo) return null
     const [owner, repo] = user.repo.split('/')
     if (!owner || !repo) return null
-    return { role: 'developer', installationId: user.installation_id, repo: { owner, repo }, userId: user.id }
+    return { role: 'developer', installationId: user.installation_id, repo: { owner, repo }, userId: user.id, inviteCode: null }
   }
 
   // Try designer (session token)
@@ -58,7 +59,7 @@ async function resolveAuth(req: Request): Promise<AuthContext | null> {
     if (!ownerUser?.repo) return null
     const [owner, repo] = ownerUser.repo.split('/')
     if (!owner || !repo) return null
-    return { role: 'designer', installationId: ownerUser.installation_id, repo: { owner, repo }, userId: session.user_id }
+    return { role: 'designer', installationId: ownerUser.installation_id, repo: { owner, repo }, userId: session.user_id, inviteCode: session.invite_code }
   }
 
   return null
@@ -177,6 +178,9 @@ async function callTool(
 
     case 'get_issue': {
       const issueNumber = Number(args['issue_number'])
+      if (ctx.role === 'designer' && ctx.inviteCode) {
+        void db.recordInviteEvent(ctx.inviteCode, 'issue_viewed')
+      }
       const [issue, comments] = await Promise.all([
         getIssue({ owner, repo, issueNumber, token }),
         listIssueComments({ owner, repo, issueNumber, token }),
@@ -197,6 +201,9 @@ async function callTool(
     case 'add_comment': {
       const issueNumber = Number(args['issue_number'])
       const body = String(args['body'])
+      if (ctx.role === 'designer' && ctx.inviteCode) {
+        void db.recordInviteEvent(ctx.inviteCode, 'comment_submitted')
+      }
       const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
       const comment = await addComment({ owner, repo, issueNumber, token, body: `${prefix}${body}` })
       return { content: [{ type: 'text', text: `Comment added: ${comment.html_url}` }] }
@@ -206,6 +213,9 @@ async function callTool(
       const issueNumber = Number(args['issue_number'])
       const decision = String(args['decision'])
       const rationale = args['rationale'] ? String(args['rationale']) : undefined
+      if (ctx.role === 'designer' && ctx.inviteCode) {
+        void db.recordInviteEvent(ctx.inviteCode, 'comment_submitted')
+      }
       const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
       let commentBody = `${prefix}## Decision\n${decision}`
       if (rationale) commentBody += `\n\n**Rationale:** ${rationale}`
@@ -219,6 +229,7 @@ async function callTool(
         db.listPendingInvitesForUser(ctx.userId),
         db.createInviteCode(ctx.userId),
       ])
+      void db.recordInviteEvent(newInvite.code, 'invite_generated')
       const info = {
         hosted_mcp_url: `${baseUrl}/mcp`,
         active_sessions: sessions.map((s) => ({
@@ -361,6 +372,8 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     return
   }
 
+  void db.recordInviteEvent(code, 'invite_opened')
+
   const ownerUser = await db.getUserById(inviteRecord.user_id)
 
   const inviterName = ownerUser?.github_user ?? 'a developer'
@@ -437,8 +450,10 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
       userId: inviteRecord.user_id,
       token: sessionToken,
       githubUser: name,
+      inviteCode: code,
     })
     await db.markInviteUsed(code)
+    void db.recordInviteEvent(code, 'config_started')
 
     const baseUrl = getBaseUrl(req)
     const mcpConfig = JSON.stringify(

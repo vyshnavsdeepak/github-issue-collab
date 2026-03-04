@@ -37,6 +37,15 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await db`ALTER TABLE designer_sessions ADD COLUMN IF NOT EXISTS invite_code TEXT REFERENCES invite_codes(code)`
+  await db`
+    CREATE TABLE IF NOT EXISTS invite_events (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      invite_code TEXT NOT NULL REFERENCES invite_codes(code),
+      event_type  TEXT NOT NULL,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
 }
 
 export interface User {
@@ -53,8 +62,19 @@ export interface DesignerSession {
   user_id: string
   token: string
   github_user: string | null
+  invite_code: string | null
   created_at: string
   last_seen: string | null
+}
+
+export interface FunnelRow {
+  invite_code: string
+  created_at: string
+  invite_generated: boolean
+  invite_opened: boolean
+  config_started: boolean
+  issue_viewed: boolean
+  comment_submitted: boolean
 }
 
 export interface InviteCode {
@@ -117,11 +137,12 @@ export async function createDesignerSession(params: {
   userId: string
   token: string
   githubUser: string
+  inviteCode?: string
 }): Promise<DesignerSession> {
   const db = sql()
   const rows = await db`
-    INSERT INTO designer_sessions (user_id, token, github_user)
-    VALUES (${params.userId}, ${params.token}, ${params.githubUser})
+    INSERT INTO designer_sessions (user_id, token, github_user, invite_code)
+    VALUES (${params.userId}, ${params.token}, ${params.githubUser}, ${params.inviteCode ?? null})
     RETURNING *
   `
   return rows[0] as DesignerSession
@@ -177,4 +198,31 @@ export async function listPendingInvitesForUser(userId: string): Promise<InviteC
     SELECT * FROM invite_codes WHERE user_id = ${userId} AND used = FALSE ORDER BY created_at DESC
   `
   return rows as InviteCode[]
+}
+
+export async function recordInviteEvent(inviteCode: string, eventType: string): Promise<void> {
+  const db = sql()
+  await db`
+    INSERT INTO invite_events (invite_code, event_type) VALUES (${inviteCode}, ${eventType})
+  `
+}
+
+export async function getFunnelForUser(userId: string): Promise<FunnelRow[]> {
+  const db = sql()
+  const rows = await db`
+    SELECT
+      ic.code        AS invite_code,
+      ic.created_at,
+      bool_or(ie.event_type = 'invite_generated')  AS invite_generated,
+      bool_or(ie.event_type = 'invite_opened')     AS invite_opened,
+      bool_or(ie.event_type = 'config_started')    AS config_started,
+      bool_or(ie.event_type = 'issue_viewed')      AS issue_viewed,
+      bool_or(ie.event_type = 'comment_submitted') AS comment_submitted
+    FROM invite_codes ic
+    LEFT JOIN invite_events ie ON ie.invite_code = ic.code
+    WHERE ic.user_id = ${userId}
+    GROUP BY ic.code, ic.created_at
+    ORDER BY ic.created_at DESC
+  `
+  return rows as FunnelRow[]
 }
