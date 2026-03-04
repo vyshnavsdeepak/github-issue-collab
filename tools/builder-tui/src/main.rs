@@ -4,6 +4,7 @@ mod config;
 mod github;
 mod monitor;
 mod poller;
+mod prompt;
 mod ui;
 
 use std::sync::Arc;
@@ -104,16 +105,40 @@ async fn main() -> anyhow::Result<()> {
     // Command channel: App -> builder
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<String>();
 
+    // Prompt channel: App -> prompt dispatcher
+    let (prompt_tx, mut prompt_rx) = mpsc::unbounded_channel::<String>();
+
     // Optional builder task
-    let cmd_tx_for_app = if config.run_builder {
+    let (cmd_tx_for_app, prompt_tx_for_app) = if config.run_builder {
         let config_clone = Arc::clone(&config);
         let backoff = Arc::new(Mutex::new(BackoffState::new()));
+        let log_tx_for_builder = log_tx.clone();
         tokio::spawn(async move {
-            builder::run(config_clone, log_tx, backoff, cmd_rx).await;
+            builder::run(config_clone, log_tx_for_builder, backoff, cmd_rx).await;
         });
-        Some(cmd_tx)
+
+        // Prompt dispatcher loop
+        let c = Arc::clone(&config);
+        let log_tx_for_prompt = log_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = prompt_rx.recv().await {
+                let c2 = Arc::clone(&c);
+                let tx2 = log_tx_for_prompt.clone();
+                if let Some(n) = msg
+                    .strip_prefix("__NEWJOB_")
+                    .and_then(|s| s.strip_suffix("__"))
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    tokio::spawn(async move { prompt::run_new_job(c2, n, tx2).await });
+                } else {
+                    tokio::spawn(async move { prompt::run(c2, msg, tx2).await });
+                }
+            }
+        });
+
+        (Some(cmd_tx), Some(prompt_tx))
     } else {
-        None
+        (None, None)
     };
 
     // Setup terminal
@@ -125,10 +150,12 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(
         config.session.clone(),
+        config.repo_root.clone(),
         worker_rx,
         Some(log_rx),
         is_polling,
         cmd_tx_for_app,
+        prompt_tx_for_app,
     );
 
     loop {

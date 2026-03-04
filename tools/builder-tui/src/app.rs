@@ -14,9 +14,12 @@ const LOG_CAP: usize = 200;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
-    Send,      // typing a prompt for the selected worker
-    Broadcast, // typing a prompt for all idle workers
-    Command,   // free-form builder command (`:` key)
+    Send,                  // typing a prompt for the selected worker
+    Broadcast,             // typing a prompt for all idle workers
+    Command,               // free-form builder command (`:` key)
+    Detail { scroll: usize }, // pane / git log overlay
+    Prompt,                // free-form Claude prompt → spin up jobs
+    NewJob,                // enter issue number to spin up worker
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +39,7 @@ pub struct Toast {
 
 pub struct App {
     pub session: String,
+    pub repo_root: String,
     pub workers: Vec<WorkerState>,
     pub selected: usize,
     pub mode: Mode,
@@ -48,22 +52,27 @@ pub struct App {
     pub toasts: Vec<Toast>,
     pub frame: u64,
     pub is_polling: Arc<AtomicBool>,
+    pub detail_content: Vec<String>,
     prev_worker_states: HashMap<String, String>,
     rx: watch::Receiver<Vec<WorkerState>>,
     log_rx: Option<mpsc::UnboundedReceiver<String>>,
     cmd_tx: Option<mpsc::UnboundedSender<String>>,
+    prompt_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl App {
     pub fn new(
         session: String,
+        repo_root: String,
         rx: watch::Receiver<Vec<WorkerState>>,
         log_rx: Option<mpsc::UnboundedReceiver<String>>,
         is_polling: Arc<AtomicBool>,
         cmd_tx: Option<mpsc::UnboundedSender<String>>,
+        prompt_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Self {
         Self {
             session,
+            repo_root,
             workers: Vec::new(),
             selected: 0,
             mode: Mode::Normal,
@@ -76,10 +85,12 @@ impl App {
             toasts: Vec::new(),
             frame: 0,
             is_polling,
+            detail_content: Vec::new(),
             prev_worker_states: HashMap::new(),
             rx,
             log_rx,
             cmd_tx,
+            prompt_tx,
         }
     }
 
@@ -205,7 +216,10 @@ impl App {
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match &self.mode {
             Mode::Normal => self.handle_normal_key(code, modifiers),
-            Mode::Send | Mode::Broadcast | Mode::Command => self.handle_input_key(code),
+            Mode::Send | Mode::Broadcast | Mode::Command | Mode::Prompt | Mode::NewJob => {
+                self.handle_input_key(code)
+            }
+            Mode::Detail { .. } => self.handle_detail_key(code),
         }
     }
 
@@ -240,9 +254,71 @@ impl App {
                 self.input.clear();
                 self.status_msg = "Builder command (Enter to send, Esc to cancel)".into();
             }
+            KeyCode::Char('d') | KeyCode::Enter => {
+                self.detail_content = self.capture_detail_content();
+                self.mode = Mode::Detail { scroll: 0 };
+            }
+            KeyCode::Char('p') => {
+                self.mode = Mode::Prompt;
+                self.input.clear();
+                self.status_msg = "Free-form prompt — Claude extracts & spins up tasks".into();
+            }
+            KeyCode::Char('n') => {
+                self.mode = Mode::NewJob;
+                self.input.clear();
+                self.status_msg = "Enter issue number to spin up a worker".into();
+            }
             _ => {}
         }
         false
+    }
+
+    fn handle_detail_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Detail { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_add(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Detail { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn capture_detail_content(&self) -> Vec<String> {
+        let Some(w) = self.workers.get(self.selected) else {
+            return vec!["No worker selected".to_string()];
+        };
+
+        if w.window_index == usize::MAX {
+            // Orphaned worktree — show git log
+            let worktree = format!("{}/.claude/worktrees/{}", self.repo_root, w.window_name);
+            let out = std::process::Command::new("git")
+                .args(["-C", &worktree, "log", "--oneline", "-20"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|| "(no git log available)\n".to_string());
+            out.lines().map(|l| l.to_string()).collect()
+        } else {
+            // Live tmux window — capture last 30 lines
+            let target = format!("{}:{}", self.session, w.window_index);
+            let out = std::process::Command::new("/opt/homebrew/bin/tmux")
+                .args(["capture-pane", "-t", &target, "-p", "-S", "-30"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|| "(failed to capture pane)\n".to_string());
+            out.lines().map(|l| l.to_string()).collect()
+        }
     }
 
     fn handle_input_key(&mut self, code: KeyCode) -> bool {
@@ -258,7 +334,9 @@ impl App {
                     Mode::Send => self.send_to_selected(&text),
                     Mode::Broadcast => self.broadcast(&text),
                     Mode::Command => self.execute_command(&text),
-                    Mode::Normal => {}
+                    Mode::Prompt => self.send_prompt(&text),
+                    Mode::NewJob => self.send_new_job(&text),
+                    Mode::Normal | Mode::Detail { .. } => {}
                 }
                 self.mode = Mode::Normal;
                 self.input.clear();
@@ -367,6 +445,37 @@ impl App {
             self.push_toast(&format!("Command: {preview}"), ToastLevel::Info);
         } else {
             self.status_msg = "Builder not running (--no-builder)".into();
+        }
+    }
+
+    fn send_prompt(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(tx) = &self.prompt_tx {
+            let _ = tx.send(text.to_string());
+            self.push_toast("Parsing with Claude...", ToastLevel::Info);
+        } else {
+            self.status_msg = "Builder not running (--no-builder)".into();
+        }
+    }
+
+    fn send_new_job(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match text.trim().parse::<u64>() {
+            Ok(n) => {
+                if let Some(tx) = &self.prompt_tx {
+                    let _ = tx.send(format!("__NEWJOB_{n}__"));
+                    self.push_toast(&format!("Launching worker for #{n}..."), ToastLevel::Info);
+                } else {
+                    self.status_msg = "Builder not running (--no-builder)".into();
+                }
+            }
+            Err(_) => {
+                self.status_msg = format!("Invalid issue number: {text}");
+            }
         }
     }
 

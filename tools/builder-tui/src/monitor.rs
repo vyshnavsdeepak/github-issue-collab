@@ -271,7 +271,7 @@ pub async fn monitor_windows(
             );
             let escaped = claude_prompt.replace('\'', "'\\''");
             let cmd = format!(
-                "cd '{}' && claude --dangerously-skip-permissions '{}'",
+                "cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'",
                 worktree, escaped
             );
             send_keys(config, &target, &cmd).await;
@@ -390,6 +390,63 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
             );
             send_keys(config, &target, &cmd).await;
         }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Scan for worktrees that have no tmux window and spin them up (respects max_concurrent).
+pub async fn promote_orphaned_worktrees(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
+    let active = count_active_workers(config).await;
+    if active >= config.max_concurrent {
+        return;
+    }
+    let slots = config.max_concurrent - active;
+
+    let windows = list_windows(config).await;
+    let window_names: std::collections::HashSet<String> =
+        windows.iter().map(|(_, n)| n.clone()).collect();
+
+    let worktrees = crate::poller::scan_worktrees(&config.repo_root);
+    let mut launched = 0;
+
+    for issue_num in worktrees {
+        if launched >= slots {
+            break;
+        }
+        let name = format!("issue-{issue_num}");
+        if window_names.contains(&name) {
+            continue;
+        }
+
+        // Ensure session exists
+        let _ = tokio::process::Command::new(&config.tmux)
+            .args(["new-session", "-d", "-s", &config.session])
+            .output()
+            .await;
+
+        let _ = tokio::process::Command::new(&config.tmux)
+            .args(["new-window", "-t", &config.session, "-n", &name])
+            .output()
+            .await;
+
+        let worktree = format!("{}/.claude/worktrees/{name}", config.repo_root);
+        let branch = format!("feature/issue-{issue_num}");
+        let claude_prompt = format!(
+            "Continue implementing GitHub issue #{issue_num} in this repo. Check what has already been done (git log, existing code), finish the implementation, commit, push branch {branch}, and open a PR to main referencing #{issue_num}. Work autonomously."
+        );
+        let escaped = claude_prompt.replace('\'', "'\\''");
+        let cmd = format!(
+            "cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'",
+            worktree, escaped
+        );
+
+        let target = format!("{}:{name}", config.session);
+        send_keys(config, &target, &cmd).await;
+
+        log(log_tx, format!("[monitor] Promoted orphaned worktree → launched #{issue_num}"));
+        toast(log_tx, "INFO", &format!("Launched #{issue_num}"));
+        launched += 1;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }

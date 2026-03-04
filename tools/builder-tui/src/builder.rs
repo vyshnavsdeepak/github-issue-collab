@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, sleep};
@@ -89,6 +90,64 @@ async fn create_worktree(config: &Config, issue_num: u64, branch: &str, worktree
     Ok(())
 }
 
+pub async fn launch_worker(
+    config: &Arc<Config>,
+    issue_num: u64,
+    title: &str,
+    body: &str,
+    log_tx: &mpsc::UnboundedSender<String>,
+) {
+    let branch = format!("feature/issue-{issue_num}");
+    let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
+
+    if Path::new(&worktree).exists() {
+        log(log_tx, format!("[builder] Worktree {worktree} already exists, reusing"));
+    } else {
+        if let Err(e) = create_worktree(config, issue_num, &branch, &worktree).await {
+            log(log_tx, format!("[builder] {e}"));
+            return;
+        }
+        log(log_tx, format!("[builder] Worktree created at {worktree}"));
+    }
+
+    // Ensure builder session exists
+    let _ = tokio::process::Command::new(&config.tmux)
+        .args(["new-session", "-d", "-s", &config.session])
+        .output()
+        .await;
+
+    // Create tmux window
+    let window = format!("issue-{issue_num}");
+    let _ = tokio::process::Command::new(&config.tmux)
+        .args(["new-window", "-t", &config.session, "-n", &window])
+        .output()
+        .await;
+
+    let active = crate::monitor::count_active_workers(config).await;
+    if active >= config.max_concurrent {
+        log(
+            log_tx,
+            format!("[builder] Queued #{issue_num} (at capacity {active}/{})", config.max_concurrent),
+        );
+        return;
+    }
+
+    let claude_prompt = format!(
+        "Implement GitHub issue #{issue_num} in this repo.\n\nTitle: {title}\n\nSpec:\n{body}\n\nInstructions:\n- Read the relevant source files first to understand the codebase\n- Implement the feature in apps/server/src/\n- Commit with a clear message (no Co-Authored-By)\n- Push branch {branch}\n- Open a PR to main referencing #{issue_num} in the PR body\n- Work autonomously, do not ask for confirmation"
+    );
+
+    let escaped = claude_prompt.replace('\'', "'\\''");
+    let cmd = format!("cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'", worktree, escaped);
+
+    let target = format!("{}:{window}", config.session);
+    let _ = tokio::process::Command::new(&config.tmux)
+        .args(["send-keys", "-t", &target, &cmd, "Enter"])
+        .output()
+        .await;
+
+    log(log_tx, format!("[builder] Launched Claude in {}:{window} for issue #{issue_num}", config.session));
+}
+
 async fn process_task(
     config: &Arc<Config>,
     task: &Task,
@@ -114,57 +173,7 @@ async fn process_task(
     );
     let _ = github::post_comment(&config.repo, config.discussion_issue, &comment).await;
 
-    let branch = format!("feature/issue-{issue_num}");
-    let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
-
-    if std::path::Path::new(&worktree).exists() {
-        log(log_tx, format!("[builder] Worktree {worktree} already exists, skipping"));
-        return;
-    }
-
-    if let Err(e) = create_worktree(config, issue_num, &branch, &worktree).await {
-        log(log_tx, format!("[builder] {e}"));
-        return;
-    }
-    log(log_tx, format!("[builder] Worktree created at {worktree}"));
-
-    // Ensure builder session exists
-    let _ = tokio::process::Command::new(&config.tmux)
-        .args(["new-session", "-d", "-s", &config.session])
-        .output()
-        .await;
-
-    // Create tmux window
-    let window = format!("issue-{issue_num}");
-    let _ = tokio::process::Command::new(&config.tmux)
-        .args(["new-window", "-t", &config.session, "-n", &window])
-        .output()
-        .await;
-
-    let active = crate::monitor::count_active_workers(config).await;
-    if active >= config.max_concurrent {
-        log(
-            log_tx,
-            format!("[builder] Queued #{issue_num} (at capacity {active}/{})", config.max_concurrent),
-        );
-        return;
-    }
-
-    let claude_prompt = format!(
-        "Implement GitHub issue #{issue_num} in this repo.\n\nTitle: {}\n\nSpec:\n{}\n\nInstructions:\n- Read the relevant source files first to understand the codebase\n- Implement the feature in apps/server/src/\n- Commit with a clear message (no Co-Authored-By)\n- Push branch {branch}\n- Open a PR to main referencing #{issue_num} in the PR body\n- Work autonomously, do not ask for confirmation",
-        task.title, task.body
-    );
-
-    let escaped = claude_prompt.replace('\'', "'\\''");
-    let cmd = format!("cd '{}' && claude --dangerously-skip-permissions '{}'", worktree, escaped);
-
-    let target = format!("{}:{window}", config.session);
-    let _ = tokio::process::Command::new(&config.tmux)
-        .args(["send-keys", "-t", &target, &cmd, "Enter"])
-        .output()
-        .await;
-
-    log(log_tx, format!("[builder] Launched Claude in {}:{window} for issue #{issue_num}", config.session));
+    launch_worker(config, issue_num, &task.title, &task.body, log_tx).await;
 }
 
 async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::UnboundedSender<String>) {
@@ -303,6 +312,9 @@ pub async fn run(
 
         log(&log_tx, "[builder] Monitoring windows...");
         crate::monitor::monitor_windows(&config, &backoff, &log_tx).await;
+
+        log(&log_tx, "[builder] Promoting orphaned worktrees...");
+        crate::monitor::promote_orphaned_worktrees(&config, &log_tx).await;
 
         log(&log_tx, "[builder] Checking for merged PRs...");
         crate::monitor::notify_rebase(&config, &log_tx).await;

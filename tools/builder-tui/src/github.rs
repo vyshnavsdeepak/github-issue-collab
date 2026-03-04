@@ -95,6 +95,13 @@ pub async fn list_prs_for_issue(repo: &str, issue_num: u64) -> Result<Vec<u64>> 
     Ok(nums)
 }
 
+pub async fn get_issue(repo: &str, issue_num: u64) -> Result<(String, String)> {
+    let n = issue_num.to_string();
+    let title = run_gh(&["issue", "view", &n, "--repo", repo, "--json", "title", "-q", ".title"]).await?;
+    let body = run_gh(&["issue", "view", &n, "--repo", repo, "--json", "body", "-q", ".body"]).await?;
+    Ok((title.trim().to_string(), body.trim().to_string()))
+}
+
 pub async fn get_issue_state(repo: &str, issue_num: u64) -> Result<String> {
     let num = issue_num.to_string();
     let out = run_gh(&[

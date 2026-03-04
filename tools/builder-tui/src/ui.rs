@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
 use crate::app::{App, Mode, ToastLevel};
@@ -39,8 +39,13 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_footer(f, app, chunks[2]);
 
-    // Toast overlay — rendered last so it appears on top
+    // Toast overlay
     draw_toasts(f, app, area);
+
+    // Detail overlay — on top of everything
+    if let Mode::Detail { scroll } = app.mode {
+        draw_detail_panel(f, app, area, scroll);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -219,7 +224,7 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let (title, content) = match &app.mode {
         Mode::Normal => {
-            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [:] Command  [q] Quit";
+            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [:] Cmd  [d] Detail  [p] Prompt  [n] New  [q] Quit";
             let msg = if app.status_msg.is_empty() {
                 hint.to_string()
             } else {
@@ -246,6 +251,18 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "Builder Command".to_string(),
             format!(" : {}_", app.input),
         ),
+        Mode::Prompt => (
+            "Prompt (Claude extracts & spins up tasks)".to_string(),
+            format!(" > {}_", app.input),
+        ),
+        Mode::NewJob => (
+            "New Job — enter issue number".to_string(),
+            format!(" # {}_", app.input),
+        ),
+        Mode::Detail { .. } => (
+            "Detail View".to_string(),
+            " [j/k] scroll  [Esc] close".to_string(),
+        ),
     };
 
     let block = Block::default()
@@ -255,6 +272,47 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 
     let para = Paragraph::new(content).block(block);
     f.render_widget(para, area);
+}
+
+fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect, scroll: usize) {
+    let width = (area.width * 9 / 10).max(20);
+    let height = (area.height * 4 / 5).max(10);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+
+    f.render_widget(Clear, rect);
+
+    let worker = app.workers.get(app.selected);
+    let worker_name = worker.map(|w| w.window_name.as_str()).unwrap_or("—");
+    let pr = worker.and_then(|w| w.pr.as_deref()).unwrap_or("—");
+    let status = worker.map(|w| w.status.as_str()).unwrap_or("—");
+
+    let content_height = height.saturating_sub(2) as usize; // subtract borders
+    let body_lines = content_height.saturating_sub(1); // leave room for hint
+
+    let mut lines: Vec<Line> = app
+        .detail_content
+        .iter()
+        .skip(scroll)
+        .take(body_lines)
+        .map(|l| Line::from(Span::raw(l.as_str())))
+        .collect();
+
+    // Bottom hint line
+    lines.push(Line::from(Span::styled(
+        "[j/k] scroll  [Esc] close",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let title = format!(" {worker_name} │ {status} │ PR: {pr} ");
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let para = Paragraph::new(lines).block(block);
+    f.render_widget(para, rect);
 }
 
 fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
