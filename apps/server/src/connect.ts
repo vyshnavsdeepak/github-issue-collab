@@ -263,9 +263,30 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <form method="POST" action="/dashboard/invite" class="inline">
-        <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
-      </form>
+      <div class="inline flex items-center gap-2">
+        <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
+        <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
+      </div>
+      <script>
+        async function createInvite() {
+          const btn = document.getElementById('new-invite-btn');
+          const display = document.getElementById('invite-url-display');
+          btn.disabled = true;
+          btn.textContent = '...';
+          try {
+            const res = await fetch('/dashboard/invite', { method: 'POST' });
+            const data = await res.json();
+            display.textContent = data.url;
+            display.classList.remove('hidden');
+            await navigator.clipboard.writeText(data.url).catch(() => {});
+            btn.textContent = '+ New Invite Link';
+          } catch (e) {
+            btn.textContent = 'Error';
+          }
+          btn.disabled = false;
+          setTimeout(() => location.reload(), 3000);
+        }
+      </script>
     </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm border-2 border-black">
@@ -460,8 +481,9 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   const user = await getUserByApiKey(apiKey)
   if (!user) { res.status(401).send('Invalid session'); return }
 
-  await createInviteCode(user.id)
-  res.redirect('/dashboard')
+  const invite = await createInviteCode(user.id)
+  const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
+  res.json({ code: invite.code, url: inviteUrl })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
