@@ -25,6 +25,22 @@ cp scripts/builder-loop.sh /tmp/builder-loop.sh
 tmux send-keys -t github-proj-leads-discussion:5 "bash /tmp/builder-loop.sh" Enter
 ```
 
+### Builder TUI
+
+A Rust TUI (`tools/builder-tui/`) provides live monitoring and interactive control of worker windows.
+
+```bash
+cd tools/builder-tui
+cargo build --release
+./target/release/builder-tui                                  # default: github-builder session
+./target/release/builder-tui --session github-proj-leads-discussion
+./target/release/builder-tui --interval 10                    # refresh every 10s
+```
+
+Key bindings: `j/k` scroll table · `s` send prompt to selected worker · `i` interrupt (C-c) · `b` broadcast to all idle workers · `r` force refresh · `q` quit
+
+The builder loop writes `/tmp/builder-status.json` each cycle with PR data consumed by the TUI.
+
 The script is kept in `/tmp/` while running so edits during a session don't require a restart — just edit `/tmp/builder-loop.sh` directly, then copy back to `scripts/` and commit.
 
 ### Key config in builder-loop.sh
