@@ -42,6 +42,7 @@ fn compute_pipeline(worktree_exists: bool, branch_name: &str, pr: &Option<String
         "sleeping" => "💤",
         "posted" => "📮",
         "no-window" => "👻",
+        "conflict" => "⚠️",
         _ => "?",
     };
     let _ = branch_name;
@@ -210,6 +211,11 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
             (std::path::Path::new(&wt).exists(), br)
         } else {
             (false, String::new())
+        };
+        // Conflict marker overrides status
+        let status = match issue_num_opt {
+            Some(n) if crate::monitor::has_conflict_marker(n) => "conflict".to_string(),
+            _ => status,
         };
         let pipeline = compute_pipeline(worktree_exists, &branch_name, &pr, &status);
 

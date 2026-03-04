@@ -376,7 +376,9 @@ fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn pipeline_style(w: &WorkerState) -> Style {
-    if w.status == "active" {
+    if w.status == "conflict" {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else if w.status == "active" {
         Style::default().fg(Color::Green)
     } else if w.pr.is_some() {
         Style::default().fg(Color::Cyan)
@@ -397,6 +399,7 @@ fn status_icon(status: &str) -> String {
         "sleeping" => "💤 sleeping".to_string(),
         "posted" => "✅ posted".to_string(),
         "no-window" => "👻 no-window".to_string(),
+        "conflict" => "⚠️  conflict".to_string(),
         _ => "❓ unknown".to_string(),
     }
 }
@@ -406,6 +409,7 @@ fn status_style(status: &str) -> Style {
         "active" => Style::default().fg(Color::Green),
         "idle" => Style::default().fg(Color::Yellow),
         "shell" => Style::default().fg(Color::Red),
+        "conflict" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         "done" => Style::default().fg(Color::Gray),
         "queued" => Style::default().fg(Color::DarkGray),
         "sleeping" => Style::default().fg(Color::Blue),

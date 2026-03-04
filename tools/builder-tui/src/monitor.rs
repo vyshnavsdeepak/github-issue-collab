@@ -350,6 +350,41 @@ pub async fn cleanup_finished(config: &Config, log_tx: &mpsc::UnboundedSender<St
 
 const REBASE_CHECK_FILE: &str = "/tmp/builder-last-merge-check.txt";
 
+/// Returns true if the worktree branch rebases cleanly onto origin/main.
+/// If there are conflicts, runs `git rebase --abort` to restore the worktree
+/// and writes a conflict marker to `/tmp/worker-issue-N-conflict.txt`.
+async fn test_rebase(worktree: &str, issue_num: u64) -> bool {
+    // Attempt the rebase
+    let out = tokio::process::Command::new("git")
+        .args(["-C", worktree, "rebase", "origin/main"])
+        .output()
+        .await;
+
+    let clean = out.map(|o| o.status.success()).unwrap_or(false);
+
+    if !clean {
+        // Abort to leave worktree in original state
+        let _ = tokio::process::Command::new("git")
+            .args(["-C", worktree, "rebase", "--abort"])
+            .output()
+            .await;
+        // Write conflict marker
+        let _ = std::fs::write(
+            format!("/tmp/worker-issue-{issue_num}-conflict.txt"),
+            "conflict",
+        );
+    } else {
+        // Clean — remove any stale conflict marker
+        let _ = std::fs::remove_file(format!("/tmp/worker-issue-{issue_num}-conflict.txt"));
+    }
+
+    clean
+}
+
+pub fn has_conflict_marker(issue_num: u64) -> bool {
+    std::path::Path::new(&format!("/tmp/worker-issue-{issue_num}-conflict.txt")).exists()
+}
+
 pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
     let last_check = std::fs::read_to_string(REBASE_CHECK_FILE)
         .ok()
@@ -367,8 +402,9 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     }
 
     let merged_count = merged.len();
-    log(log_tx, format!("[rebase] Detected {merged_count} merged PR(s) since {last_check}"));
-    toast(log_tx, "INFO", &format!("{merged_count} PR(s) merged — rebasing"));
+    let merged_titles: Vec<String> = merged.iter().map(|(n, t)| format!("#{n} {t}")).collect();
+    log(log_tx, format!("[rebase] Detected {merged_count} merged PR(s): {}", merged_titles.join(", ")));
+    toast(log_tx, "INFO", &format!("{merged_count} PR(s) merged — checking conflicts"));
 
     // Pull latest main
     let _ = tokio::process::Command::new("git")
@@ -379,27 +415,62 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     let windows = list_windows(config).await;
     for (idx, name) in &windows {
         let Some(issue_num) = extract_issue_num(name) else { continue };
+        let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
+        if !std::path::Path::new(&worktree).exists() {
+            continue;
+        }
+
+        // Test-rebase to see if conflicts exist
+        let clean = test_rebase(&worktree, issue_num).await;
         let pane = capture_pane(config, *idx).await;
         let state = classify_pane(&pane);
         let target = format!("{}:{}", config.session, idx);
 
-        if state == "claude_repl" {
-            log(log_tx, format!("[rebase] Asking issue #{issue_num} worker to rebase"));
+        if !clean {
+            // Conflict — tell Claude (or shell) specifically what to fix
+            log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT rebasing onto main"));
+            toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
+
+            let conflict_prompt = format!(
+                "IMPORTANT: New PRs have merged to main and your branch now has CONFLICTS. \
+                Please resolve them now:\n\
+                1. cd '{}'\n\
+                2. git fetch origin\n\
+                3. git rebase origin/main\n\
+                4. For each conflict: edit the file to resolve, then `git add <file>`, then `git rebase --continue`\n\
+                5. After all conflicts are resolved and rebase is done, force-push: git push --force-with-lease origin HEAD\n\
+                This is blocking your PR from being merged. Fix the conflicts before continuing.",
+                worktree
+            );
+
+            if state == "claude_repl" {
+                send_keys(config, &target, &conflict_prompt).await;
+            } else if state == "shell" {
+                // Relaunch Claude specifically to fix conflicts
+                let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
+                let script = format!(
+                    "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
+                    worktree,
+                    conflict_prompt.replace('\'', "'\\''")
+                );
+                if std::fs::write(&script_path, &script).is_ok() {
+                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                    send_keys(config, &target, &script_path).await;
+                }
+            }
+        } else if state == "claude_repl" {
+            log(log_tx, format!("[rebase] Asking issue #{issue_num} worker to rebase (clean)"));
             send_keys(
                 config,
                 &target,
-                "Some PRs just merged to main. Please run: git fetch origin && git rebase origin/main — then continue your work.",
+                "Some PRs just merged to main. Please run: git fetch origin && git rebase origin/main — your branch rebases cleanly, just needs the update.",
             )
             .await;
         } else if state == "shell" {
-            let worktree = format!(
-                "{}/.claude/worktrees/issue-{issue_num}",
-                config.repo_root
-            );
             if !std::path::Path::new(&worktree).exists() {
                 continue;
             }
-            log(log_tx, format!("[rebase] Running rebase for issue #{issue_num} at shell"));
+            log(log_tx, format!("[rebase] Running rebase for issue #{issue_num} at shell (clean)"));
             let cmd = format!(
                 "cd '{}' && git fetch origin && git rebase origin/main && echo '[rebase done]'",
                 worktree
