@@ -12,8 +12,9 @@ import {
   listPendingInvitesForUser,
   createInviteCode,
   revokeDesignerSession,
+  pingDb,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssuesByLabel } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -256,6 +257,29 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     </div>
   </section>
 
+  <!-- INVITE HEALTH CHECK -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="font-bold text-lg">Invite Link Health Check</h3>
+        <p class="text-xs text-gray-500 mt-0.5">Validates the full invite flow before sending a link to a designer</p>
+      </div>
+      <button id="health-btn" onclick="runHealthCheck()" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">Run Check</button>
+    </div>
+    <div id="health-results" class="hidden">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-8">Pass</th>
+            <th class="text-left p-3 border-r-2 border-white">Check</th>
+            <th class="text-left p-3">Detail</th>
+          </tr>
+        </thead>
+        <tbody id="health-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- MCP CONFIG -->
   <section class="border-b-4 border-black px-6 py-6">
     <h3 class="font-bold text-lg mb-4">MCP Config</h3>
@@ -286,6 +310,30 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 function copyEl(id, btn) {
   navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
     .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+}
+async function runHealthCheck() {
+  const btn = document.getElementById('health-btn');
+  const results = document.getElementById('health-results');
+  const rows = document.getElementById('health-rows');
+  btn.textContent = 'Running…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/invite/health');
+    const data = await res.json();
+    rows.innerHTML = data.checks.map(c => \`
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black text-center font-bold \${c.pass ? 'text-green-700' : 'text-red-600'}">\${c.pass ? '✓' : '✗'}</td>
+        <td class="p-3 border-r-2 border-black font-bold text-xs">\${c.name}</td>
+        <td class="p-3 text-xs text-gray-600">\${c.detail}</td>
+      </tr>\`).join('');
+    results.classList.remove('hidden');
+    btn.textContent = data.allPass ? 'All checks passed ✓' : 'Re-run Check';
+  } catch (err) {
+    rows.innerHTML = \`<tr><td colspan="3" class="p-4 text-sm text-red-600">Error: \${err.message}</td></tr>\`;
+    results.classList.remove('hidden');
+    btn.textContent = 'Re-run Check';
+  }
+  btn.disabled = false;
 }
   </script>
 </body>
@@ -380,6 +428,90 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
 
   await createInviteCode(user.id)
   res.redirect('/dashboard')
+}
+
+export async function handleInviteHealth(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).json({ error: 'Not authenticated' }); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).json({ error: 'Invalid session' }); return }
+
+  const checks: Array<{ name: string; pass: boolean; detail: string }> = []
+  const baseUrl = process.env.INVITE_BASE_URL ?? getBaseUrl(req)
+
+  // 1. Invite URL resolves
+  const inviteUrl = `${baseUrl}/invite`
+  try {
+    const r = await fetch(inviteUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
+    // /invite without ?code= returns 400 which is expected — any non-5xx means the server is up
+    checks.push({ name: 'Invite URL resolves', pass: r.status < 500, detail: `${inviteUrl} → HTTP ${r.status}` })
+  } catch (err) {
+    checks.push({ name: 'Invite URL resolves', pass: false, detail: `${inviteUrl} → ${err instanceof Error ? err.message : String(err)}` })
+  }
+
+  // 2. GitHub App token is valid
+  const appId = process.env.GITHUB_APP_ID
+  let installationToken: string | null = null
+  if (!appId) {
+    checks.push({ name: 'GitHub App token', pass: false, detail: 'GITHUB_APP_ID not configured' })
+  } else {
+    try {
+      const privateKey = loadPrivateKey()
+      installationToken = await getInstallationToken(user.installation_id, appId, privateKey)
+      checks.push({ name: 'GitHub App token', pass: true, detail: 'Installation token obtained successfully' })
+    } catch (err) {
+      checks.push({ name: 'GitHub App token', pass: false, detail: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  // 3. Database reachable
+  try {
+    await pingDb()
+    checks.push({ name: 'Database reachable', pass: true, detail: 'Postgres connection OK' })
+  } catch (err) {
+    checks.push({ name: 'Database reachable', pass: false, detail: err instanceof Error ? err.message : String(err) })
+  }
+
+  // 4. Target repo has at least one designer-input labeled issue
+  if (!user.repo) {
+    checks.push({ name: 'designer-input issue exists', pass: false, detail: 'No repo configured for this account' })
+  } else if (!installationToken) {
+    checks.push({ name: 'designer-input issue exists', pass: false, detail: 'Skipped — GitHub token unavailable' })
+  } else {
+    try {
+      const [owner, repo] = user.repo.split('/')
+      const issues = await listIssuesByLabel({ owner, repo, token: installationToken, label: 'designer-input' })
+      checks.push({
+        name: 'designer-input issue exists',
+        pass: issues.length > 0,
+        detail: issues.length > 0
+          ? `Found ${issues.length} open issue(s) with label in ${user.repo}`
+          : `No open issues with "designer-input" label found in ${user.repo}`,
+      })
+    } catch (err) {
+      checks.push({ name: 'designer-input issue exists', pass: false, detail: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  // 5. MCP server responds
+  const mcpUrl = `${baseUrl}/mcp`
+  try {
+    const mcpRes = await fetch(mcpUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'health-check', version: '1' } },
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    checks.push({ name: 'MCP server responds', pass: mcpRes.ok, detail: `${mcpUrl} → HTTP ${mcpRes.status}` })
+  } catch (err) {
+    checks.push({ name: 'MCP server responds', pass: false, detail: `${mcpUrl} → ${err instanceof Error ? err.message : String(err)}` })
+  }
+
+  res.json({ checks, allPass: checks.every(c => c.pass) })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {

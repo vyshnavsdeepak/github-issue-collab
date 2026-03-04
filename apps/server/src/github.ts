@@ -161,6 +161,19 @@ export async function getAuthUser(token: string): Promise<{ login: string }> {
   return ghFetch<{ login: string }>('https://api.github.com/user', token)
 }
 
+export async function listIssuesByLabel(params: {
+  owner: string
+  repo: string
+  token: string
+  label: string
+}): Promise<Issue[]> {
+  const { owner, repo, token, label } = params
+  return ghFetch<Issue[]>(
+    `https://api.github.com/repos/${owner}/${repo}/issues?labels=${encodeURIComponent(label)}&state=open&per_page=1`,
+    token
+  )
+}
+
 export async function getInstallationRepos(
   installationId: string,
   appId: string,

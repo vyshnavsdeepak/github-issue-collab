@@ -178,3 +178,8 @@ export async function listPendingInvitesForUser(userId: string): Promise<InviteC
   `
   return rows as InviteCode[]
 }
+
+export async function pingDb(): Promise<void> {
+  const db = sql()
+  await db`SELECT 1`
+}
