@@ -178,3 +178,15 @@ export async function listPendingInvitesForUser(userId: string): Promise<InviteC
   `
   return rows as InviteCode[]
 }
+
+export async function countInviteCodes(): Promise<number> {
+  const db = sql()
+  const rows = await db`SELECT COUNT(*)::int AS n FROM invite_codes`
+  return (rows[0] as { n: number }).n
+}
+
+export async function getFirstUser(): Promise<User | null> {
+  const db = sql()
+  const rows = await db`SELECT * FROM users ORDER BY created_at ASC LIMIT 1`
+  return (rows[0] as User) ?? null
+}
