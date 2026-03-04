@@ -17,7 +17,8 @@ impl Default for Config {
             session: "github-builder".to_string(),
             interval_secs: 5,
             repo: "vyshnavsdeepak/github-issue-collab".to_string(),
-            repo_root: std::env::var("REPO_ROOT").unwrap_or_default(),
+            repo_root: std::env::var("REPO_ROOT")
+                .unwrap_or_else(|_| "/Users/vyshnav/src/github.com/vyshnavsdeepak/github-issue-collab".to_string()),
             discussion_issue: 3,
             builder_sleep_secs: 300,
             max_concurrent: 10,

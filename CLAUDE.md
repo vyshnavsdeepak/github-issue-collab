@@ -10,76 +10,40 @@ Full-stack app (Next.js + Hono API) that lets teams collaborate on GitHub issues
 
 ## Builder automation
 
-The repo uses an autonomous builder loop (`scripts/builder-loop.sh`) that:
-1. Reads a GitHub discussion thread (issue #3) for product ideas
+The builder is a Rust TUI (`tools/builder-tui/`) that runs the full autonomous loop:
+
+1. Reads GitHub discussion issue #3 for product ideas
 2. Files concrete GitHub issues
 3. Creates git worktrees under `.claude/worktrees/issue-<N>/`
 4. Launches Claude instances in `github-builder` tmux session to implement each issue
-5. Monitors those windows — nudges idle Claude, relaunches crashed Claude, cleans up closed issues
+5. Monitors worker windows — nudges idle Claude, relaunches crashed Claude
 
 ### Running the builder
 
 ```bash
-# Copy to /tmp and run in tmux window 5 of github-proj-leads-discussion
-cp scripts/builder-loop.sh /tmp/builder-loop.sh
-tmux send-keys -t github-proj-leads-discussion:5 "bash /tmp/builder-loop.sh" Enter
-```
-
-### Builder TUI
-
-A Rust TUI (`tools/builder-tui/`) provides live monitoring and interactive control of worker windows.
-
-```bash
 cd tools/builder-tui
 cargo build --release
-./target/release/builder-tui                                  # default: github-builder session
-./target/release/builder-tui --session github-proj-leads-discussion
-./target/release/builder-tui --interval 10                    # refresh every 10s
+./target/release/builder-tui
 ```
 
-Key bindings: `j/k` scroll table · `s` send prompt to selected worker · `i` interrupt (C-c) · `b` broadcast to all idle workers · `r` force refresh · `q` quit
+Run it in the `vyshnav-builder` window of the `github-proj-leads-discussion` tmux session.
 
-The builder loop writes `/tmp/builder-status.json` each cycle with PR data consumed by the TUI.
+Key bindings: `j/k` scroll · `s` send prompt to selected worker · `i` interrupt (C-c) · `b` broadcast to all idle workers · `r` force refresh · `q` quit
 
-The script is kept in `/tmp/` while running so edits during a session don't require a restart — just edit `/tmp/builder-loop.sh` directly, then copy back to `scripts/` and commit.
+### Key config (`tools/builder-tui/src/config.rs`)
 
-### Key config in builder-loop.sh
-
-| Variable | Value |
+| Field | Value |
 |---|---|
-| `REPO` | `vyshnavsdeepak/github-issue-collab` |
-| `DISCUSSION_ISSUE` | `3` |
-| `BUILDER_SESSION` | `github-builder` |
-| `REPO_ROOT` | `/Users/vyshnav/src/github.com/vyshnavsdeepak/github-issue-collab` |
-| `SLEEP` | `300` (scan every 5 min) |
-
-### Window state detection (monitor_builder_windows)
-
-| Pane content | State | Action |
-|---|---|---|
-| `bypass permissions on` + no PR | `claude_repl` (idle) | Nudge with PR prompt |
-| `bypass permissions on` + PR exists | done | Skip |
-| `vyshnav@` or `>>` + no PR | `shell` (crashed) | Relaunch Claude |
-| Shell prompt + PR exists | done | Skip |
-| Spinner words (`Crunching`, `Brewing`, etc.) | `active` | Skip |
+| `repo` | `vyshnavsdeepak/github-issue-collab` |
+| `discussion_issue` | `3` |
+| `builder_session` | `github-builder` |
+| `repo_root` | `/Users/vyshnav/src/github.com/vyshnavsdeepak/github-issue-collab` |
+| `scan_interval` | `300s` |
 
 ### Rate limit / backoff
 
-- `set_backoff` writes an expiry timestamp to `/tmp/rl-backoff-until.txt`
-- Also touches `/tmp/rl-resumed.txt` to trigger `resume_after_backoff` once the backoff clears
-- After backoff clears, `resume_after_backoff` sends `"continue with the task"` to idle Claude windows
-
-### Editing the builder loop
-
-To update the script and keep `/tmp/` in sync:
-```bash
-# Edit in repo
-vim scripts/builder-loop.sh
-# Sync to running location
-cp scripts/builder-loop.sh /tmp/builder-loop.sh
-# The running loop picks up changes on next iteration (it re-reads functions each loop)
-# Actually: you need to restart the tmux process for changes to take effect
-```
+- Backoff expiry stored in `/tmp/rl-backoff-until.txt`
+- After backoff clears, TUI sends `"continue with the task"` to idle workers
 
 ## Development
 
