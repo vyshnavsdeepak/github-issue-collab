@@ -6,7 +6,7 @@ import { join } from 'path'
 import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
-import { getUserByApiKey } from './db'
+import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleRevokeSession } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
@@ -142,6 +142,28 @@ app.post('/token', async (req, res) => {
   }
 })
 
+async function seedDemoInviteIfNeeded(): Promise<void> {
+  if (!process.env.POSTGRES_URL) return
+  try {
+    await runMigrations()
+    const count = await countInviteCodes()
+    if (count > 0) return
+    const user = await getFirstUser()
+    if (!user) {
+      console.log('[demo] Invites table is empty but no users found — complete the /connect flow first.')
+      return
+    }
+    const invite = await createInviteCode(user.id)
+    const baseUrl =
+      process.env.INVITE_BASE_URL ??
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${process.env.PORT ?? 3000}`)
+    console.log(`[demo] Invites table was empty — created demo invite for ${user.github_user ?? user.id}:`)
+    console.log(`[demo]   ${baseUrl}/invite?code=${invite.code}`)
+  } catch (err) {
+    console.warn(`[demo] Could not seed demo invite: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 // Warn if invite base URL cannot be derived from environment
 if (!process.env.INVITE_BASE_URL && !process.env.VERCEL_URL) {
   console.warn(
@@ -166,5 +188,9 @@ if (!process.env.VERCEL) {
     console.log(`  POST /invite/callback`)
     console.log(`  POST /mcp   (hosted MCP)`)
     console.log(`  POST /token (installation token broker)`)
+    void seedDemoInviteIfNeeded()
   })
+} else {
+  // On Vercel cold start, attempt seeding in the background
+  void seedDemoInviteIfNeeded()
 }
