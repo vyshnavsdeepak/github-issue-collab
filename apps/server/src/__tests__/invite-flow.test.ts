@@ -137,15 +137,13 @@ describe('Designer invite flow', () => {
       .post('/dashboard/invite')
       .set('Cookie', `gh_session=${encodeURIComponent(testApiKey)}`)
 
-    // The route redirects to /dashboard after creating the code
-    expect(res.status).toBe(302)
+    // The route now returns JSON with the invite URL
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveProperty('code')
+    expect(res.body).toHaveProperty('url')
+    expect(res.body.url).toContain('/invite?code=')
 
-    // Verify the invite was persisted in the in-memory DB
-    const invite = [...inviteCodes.values()].find((i) => i['user_id'] === testUserId)
-    expect(invite).toBeDefined()
-    expect(invite!['used']).toBe(false)
-
-    inviteCode = invite!['code'] as string
+    inviteCode = res.body.code as string
   })
 
   it('step 2 — GET /invite?code=<token> returns HTML with name form', async () => {
