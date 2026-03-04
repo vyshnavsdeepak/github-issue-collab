@@ -235,10 +235,7 @@ pub async fn monitor_windows(
                 format!("[monitor] Issue #{issue_num}: Claude idle, no PR — nudging"),
             );
             toast(log_tx, "INFO", &format!("Nudged #{issue_num}"));
-            let msg = format!(
-                "Have you pushed the branch and opened a PR to main referencing #{}? If not, please do that now. Check git status, commit any uncommitted changes, then: git push origin HEAD && gh pr create --base main --title \"$(git log -1 --format=%s)\" --body \"Closes #{issue_num}\"",
-                issue_num
-            );
+            let msg = format!("No PR yet for #{issue_num}. Commit, push, and open a PR: git push origin HEAD && gh pr create --base main --body 'Closes #{issue_num}'");
             send_keys(config, &target, &msg).await;
 
             let comment = format!(
@@ -252,9 +249,7 @@ pub async fn monitor_windows(
                 log_tx,
                 format!("[monitor] Issue #{issue_num}: Claude idle, PR #{pr} open — checking for review"),
             );
-            let msg = format!(
-                "PR #{pr} is open for issue #{issue_num}. Please check if there are any review comments to address: gh pr view {pr} --comments. If the PR looks good and CI passes, you can wait for merge.",
-            );
+            let msg = format!("PR #{pr} open for #{issue_num}. Check reviews: gh pr view {pr} --comments — address any feedback or wait for CI.");
             send_keys(config, &target, &msg).await;
         } else if state == "shell" && !pr_exists {
             let active = count_active_workers(config).await;
@@ -431,13 +426,8 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
             log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT rebasing onto main"));
             toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
 
-            // Single-line: no embedded \n so Claude REPL submits on Enter
             let conflict_prompt = format!(
-                "IMPORTANT: New PRs merged to main and your branch has CONFLICTS. \
-                Resolve them: cd '{wt}' && git fetch origin && git rebase origin/main — \
-                for each conflicted file fix the markers then: git add <file> && git rebase --continue. \
-                When all resolved: git push --force-with-lease origin HEAD. Fix this before anything else.",
-                wt = worktree
+                "Branch conflicts with main. Fix: git fetch origin && git rebase origin/main — resolve each conflict, git add, git rebase --continue, then git push --force-with-lease origin HEAD"
             );
 
             if state == "claude_repl" {
@@ -458,12 +448,7 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
         } else if state == "claude_repl" {
             // test_rebase already applied the rebase — tell Claude to push
             log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — asking Claude to push"));
-            send_keys(
-                config,
-                &target,
-                "Some PRs just merged to main. Your branch has been rebased onto main automatically. Please run: git push --force-with-lease origin HEAD to update your PR.",
-            )
-            .await;
+            send_keys(config, &target, "PRs merged to main. Branch rebased — please run: git push --force-with-lease origin HEAD").await;
         } else if state == "shell" {
             if !std::path::Path::new(&worktree).exists() {
                 continue;
@@ -554,7 +539,7 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                                                 let cmd = format!("cd '{}' && git push --force-with-lease origin HEAD", worktree);
                                                 send_keys(config, &target, &cmd).await;
                                             } else if state == "claude_repl" {
-                                                send_keys(config, &target, "Please run: git push --force-with-lease origin HEAD to update your PR.").await;
+                                                send_keys(config, &target, "Branch rebased — run: git push --force-with-lease origin HEAD").await;
                                             }
                                             break;
                                         }
