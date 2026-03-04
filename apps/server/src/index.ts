@@ -7,6 +7,7 @@ import { getInstallationToken } from './github'
 import { getUserByApiKey } from './db'
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleRevokeSession } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
+import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
 
 const app = express()
 app.use(express.json())
@@ -69,6 +70,22 @@ app.get('/invite', (req, res) => {
 
 app.post('/invite/callback', (req, res) => {
   void handleInviteCallback(req, res)
+})
+
+app.get('/designer', (req, res) => {
+  void handleDesignerPortal(req, res)
+})
+
+app.get('/designer/issue/:number', (req, res) => {
+  void handleDesignerIssue(req, res)
+})
+
+app.post('/designer/comment', (req, res) => {
+  void handleDesignerComment(req, res)
+})
+
+app.post('/designer/decision', (req, res) => {
+  void handleDesignerDecision(req, res)
 })
 
 app.post('/mcp', (req, res) => {

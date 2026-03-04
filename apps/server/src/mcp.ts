@@ -440,67 +440,9 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     })
     await db.markInviteUsed(code)
 
-    const baseUrl = getBaseUrl(req)
-    const mcpConfig = JSON.stringify(
-      {
-        mcpServers: {
-          'github-collab': {
-            url: `${baseUrl}/mcp`,
-            headers: { Authorization: `Bearer ${sessionToken}` },
-          },
-        },
-      },
-      null,
-      2
-    )
-
-    const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${sessionToken}" \\\n  ${baseUrl}/mcp`
-
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Designer Access Ready — github-issue-collab</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
-    pre, code { font-family: monospace; }
-  </style>
-</head>
-<body class="bg-white text-black font-mono p-0">
-  <header class="border-b-4 border-black px-6 py-5">
-    <h1 class="font-bold text-2xl">github-issue-collab</h1>
-  </header>
-  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
-    <p class="text-xs uppercase tracking-widest mb-3 text-green-400">✓ Access Ready</p>
-    <h2 class="font-bold text-4xl mb-2">Welcome, ${name}</h2>
-    <p class="text-gray-400 text-sm">Add the config below to Claude to get started.</p>
-  </section>
-  <section class="px-6 py-10 border-b-4 border-black">
-    <h3 class="font-bold text-xl mb-2">Option A — CLI command</h3>
-    <p class="text-sm text-gray-600 mb-3">Run this in your terminal:</p>
-    <div class="flex items-start gap-3 mb-2">
-      <pre id="cli-cmd" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${cliCommand}</pre>
-      <button onclick="copyEl('cli-cmd', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
-    </div>
-  </section>
-  <section class="px-6 py-10">
-    <h3 class="font-bold text-xl mb-2">Option B — JSON config</h3>
-    <p class="text-sm text-gray-600 mb-3">Add to <code>claude_desktop_config.json</code> or Claude Code MCP settings:</p>
-    <div class="flex items-start gap-3 mb-4">
-      <pre id="mcp-config" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${mcpConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-      <button onclick="copyEl('mcp-config', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
-    </div>
-    <p class="text-xs text-gray-500">You have designer role: you'll see only <code class="bg-gray-100 px-1">designer-input</code> labeled issues.</p>
-  </section>
-  <script>
-function copyEl(id, btn) {
-  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
-    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
-}
-  </script>
-</body>
-</html>`)
+    const maxAge = 90 * 24 * 60 * 60
+    res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
+    res.redirect('/designer')
   } catch (err) {
     res.status(500).send(`Error: ${err instanceof Error ? err.message : String(err)}`)
   }
