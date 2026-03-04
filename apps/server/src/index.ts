@@ -162,7 +162,11 @@ async function seedDemoInviteIfNeeded(): Promise<void> {
       process.env.INVITE_BASE_URL ??
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${process.env.PORT ?? 3000}`)
     console.log(`[demo] Invites table was empty — created demo invite for ${user.github_user ?? user.id}:`)
-    console.log(`[demo]   ${baseUrl}/invite?code=${invite.code}`)
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      console.log('[demo] Demo invite created — retrieve URL from your developer dashboard')
+    } else {
+      console.log(`[demo]   ${baseUrl}/invite?code=${invite.code}`)
+    }
   } catch (err) {
     console.warn(`[demo] Could not seed demo invite: ${err instanceof Error ? err.message : String(err)}`)
   }
