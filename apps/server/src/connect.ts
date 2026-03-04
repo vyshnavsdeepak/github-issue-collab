@@ -13,7 +13,7 @@ import {
   createInviteCode,
   revokeDesignerSession,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, addLabel, removeLabel } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -137,10 +137,25 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     return
   }
 
+  const appId = process.env.GITHUB_APP_ID
+  let privateKey = ''
+  try { privateKey = loadPrivateKey() } catch { /* no private key */ }
+
   const [sessions, invites] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
   ])
+
+  let issues: import('./github.js').Issue[] = []
+  if (appId && privateKey && user.repo) {
+    try {
+      const [owner, repo] = user.repo.split('/')
+      if (owner && repo) {
+        const instToken = await getInstallationToken(user.installation_id, appId, privateKey)
+        issues = await listIssues({ owner, repo, token: instToken, state: 'open', per_page: 50 })
+      }
+    } catch { /* silently skip if issues can't be fetched */ }
+  }
 
   const baseUrl = getBaseUrl(req)
   const mcpUrl = `${baseUrl}/mcp`
@@ -149,6 +164,33 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     null, 2
   )
   const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${apiKey}" \\\n  ${mcpUrl}`
+
+  const issueRows = issues.length
+    ? issues.map(issue => {
+        const hasLabel = issue.labels.some(l => l.name === 'designer-input')
+        const labelBadges = issue.labels.map(l =>
+          `<span class="inline-block border border-black px-1 text-xs" style="background:#${esc(l.color)};color:${parseInt(l.color, 16) > 0x888888 ? '#000' : '#fff'}">${esc(l.name)}</span>`
+        ).join(' ')
+        return `
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 w-12">#${issue.number}</td>
+        <td class="p-3 border-r-2 border-black">
+          <a href="${esc(issue.html_url)}" target="_blank" class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
+          ${labelBadges ? `<div class="mt-1 flex flex-wrap gap-1">${labelBadges}</div>` : ''}
+        </td>
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 w-28">${timeAgo(issue.updated_at)}</td>
+        <td class="p-3 w-36">
+          <form method="POST" action="/dashboard/label-toggle" class="inline">
+            <input type="hidden" name="issue_number" value="${issue.number}">
+            <input type="hidden" name="has_label" value="${hasLabel ? '1' : '0'}">
+            <button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 ${hasLabel ? 'bg-black text-white hover:bg-white hover:text-black' : 'hover:bg-black hover:text-white'}">
+              ${hasLabel ? '✓ designer-input' : '+ designer-input'}
+            </button>
+          </form>
+        </td>
+      </tr>`
+      }).join('')
+    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No open issues found</td></tr>`
 
   const designerRows = sessions.length
     ? sessions.map(s => `
@@ -213,6 +255,24 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <p class="text-xs uppercase tracking-widest mb-2 text-green-400">✓ Live</p>
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
     <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'}</p>
+  </section>
+
+  <!-- ISSUES -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Open Issues</h3>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-12">#</th>
+            <th class="text-left p-3 border-r-2 border-white">Title</th>
+            <th class="text-left p-3 border-r-2 border-white w-28">Updated</th>
+            <th class="text-left p-3 w-36">Label</th>
+          </tr>
+        </thead>
+        <tbody>${issueRows}</tbody>
+      </table>
+    </div>
   </section>
 
   <!-- DESIGNERS -->
@@ -394,6 +454,48 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
   if (!user) { res.status(401).send('Invalid session'); return }
 
   await revokeDesignerSession(sessionId)
+  res.redirect('/dashboard')
+}
+
+export async function handleLabelToggle(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const issueNumber = parseInt(String(body['issue_number'] ?? ''), 10)
+  const hasLabel = body['has_label'] === '1'
+
+  if (!issueNumber || !user.repo) { res.status(400).send('Invalid request'); return }
+
+  const appId = process.env.GITHUB_APP_ID
+  let privateKey: string
+  try {
+    privateKey = loadPrivateKey()
+  } catch (err) {
+    res.status(500).send(err instanceof Error ? err.message : String(err))
+    return
+  }
+
+  if (!appId) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+
+  const [owner, repo] = user.repo.split('/')
+  if (!owner || !repo) { res.status(400).send('Invalid repo configuration'); return }
+
+  try {
+    const token = await getInstallationToken(user.installation_id, appId, privateKey)
+    if (hasLabel) {
+      await removeLabel({ owner, repo, issueNumber, token, label: 'designer-input' })
+    } else {
+      await addLabel({ owner, repo, issueNumber, token, label: 'designer-input' })
+    }
+  } catch (err) {
+    res.status(502).send(`GitHub API error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
   res.redirect('/dashboard')
 }
 
