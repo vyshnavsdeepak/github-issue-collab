@@ -355,6 +355,9 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
       <div class="inline flex items-center gap-2">
+        <form method="POST" action="/dashboard/preview" class="inline">
+          <button type="submit" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">Preview as Designer</button>
+        </form>
         <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
         <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
       </div>
@@ -663,6 +666,18 @@ export async function handleDashboardSetRepo(req: Request, res: Response): Promi
 
   await updateUserRepo(user.id, repo)
   res.redirect('/dashboard')
+}
+
+export async function handlePreview(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const invite = await createInviteCode(user.id)
+  const startedAt = Date.now()
+  res.redirect(`/invite?code=${invite.code}&preview=1&t=${startedAt}`)
 }
 
 function esc(str: string): string {

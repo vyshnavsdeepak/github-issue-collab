@@ -424,6 +424,20 @@ export async function handleMcp(req: Request, res: Response): Promise<void> {
 
 // Designer invite flow
 
+function previewBanner(): string {
+  return `<div style="position:sticky;top:0;z-index:50;background:#f59e0b;color:#000;font-weight:bold;text-align:center;padding:10px 16px;font-family:monospace;font-size:13px;border-bottom:3px solid #000;letter-spacing:0.05em;">
+    ⚠ PREVIEW MODE — You are simulating the designer invite flow. No real invite has been sent.
+  </div>`
+}
+
+function formatElapsed(ms: number): string {
+  const secs = Math.floor(ms / 1000)
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  const rem = secs % 60
+  return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`
+}
+
 export async function handleInvite(req: Request, res: Response): Promise<void> {
   const code = req.query['code'] as string | undefined
   if (!code) {
@@ -434,6 +448,9 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     }))
     return
   }
+
+  const isPreview = req.query['preview'] === '1'
+  const startedAt = req.query['t'] as string | undefined
 
   let inviteRecord: Awaited<ReturnType<typeof db.getInviteCode>>
   try {
@@ -481,11 +498,15 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   const inviterName = ownerUser?.github_user ?? 'a developer'
   const repoName = ownerUser?.repo ?? 'their repository'
 
+  const previewHiddenFields = isPreview
+    ? `<input type="hidden" name="preview" value="1">${startedAt ? `<input type="hidden" name="t" value="${startedAt}">` : ''}`
+    : ''
+
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Designer Invite — github-issue-collab</title>
+  <title>${isPreview ? '[PREVIEW] ' : ''}Designer Invite — github-issue-collab</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
@@ -494,6 +515,7 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   </style>
 </head>
 <body class="bg-white text-black font-mono p-0">
+  ${isPreview ? previewBanner() : ''}
   <header class="border-b-4 border-black px-6 py-5">
     <h1 class="font-bold text-2xl">github-issue-collab</h1>
   </header>
@@ -508,6 +530,7 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
     <form method="POST" action="/invite/callback" class="flex flex-col gap-4 max-w-sm">
       <input type="hidden" name="code" value="${code}">
+      ${previewHiddenFields}
       <div>
         <label class="text-xs uppercase tracking-widest block mb-2">Your name or handle</label>
         <input type="text" name="name" required placeholder="e.g. alice" class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
@@ -526,6 +549,8 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
   const body = req.body as Record<string, unknown> | undefined
   const code = body?.['code'] as string | undefined
   const name = ((body?.['name'] as string | undefined) ?? '').trim()
+  const isPreview = body?.['preview'] === '1'
+  const startedAt = body?.['t'] ? Number(body['t']) : null
 
   if (!code || !name) {
     res.status(400).send(errorPage({
@@ -582,6 +607,122 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     })
     await db.markInviteUsed(code)
     void db.recordInviteEvent(code, 'config_started')
+
+    if (isPreview) {
+      const elapsed = startedAt ? Date.now() - startedAt : null
+      const elapsedStr = elapsed !== null ? formatElapsed(elapsed) : 'unknown'
+
+      const decisionPoints = [
+        {
+          n: 1,
+          label: 'Accept invite',
+          friction: 'LOW',
+          note: 'Landing page is clear — a designer can read it and decide without technical knowledge.',
+        },
+        {
+          n: 2,
+          label: 'Enter name / handle',
+          friction: 'LOW',
+          note: 'Simple text input. No confusion expected.',
+        },
+        {
+          n: 3,
+          label: 'Configure MCP (CLI or JSON)',
+          friction: 'HIGH',
+          note: 'Likely abandonment point. Running a terminal command or editing a JSON config file requires technical familiarity most designers don\'t have.',
+        },
+      ]
+
+      const decisionRows = decisionPoints.map(d => `
+        <tr class="border-t-2 border-black">
+          <td class="p-3 border-r-2 border-black text-center font-bold">${d.n}</td>
+          <td class="p-3 border-r-2 border-black font-bold">${d.label}</td>
+          <td class="p-3 border-r-2 border-black">
+            <span class="text-xs font-bold px-2 py-0.5 border-2 ${d.friction === 'HIGH' ? 'border-red-600 text-red-600' : 'border-green-700 text-green-700'}">${d.friction}</span>
+          </td>
+          <td class="p-3 text-xs text-gray-600">${d.note}</td>
+        </tr>`).join('')
+
+      res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>[PREVIEW] Designer Flow Summary — github-issue-collab</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
+    pre, code { font-family: monospace; }
+    a { text-decoration: underline; }
+    a:hover { background: #000; color: #fff; }
+  </style>
+</head>
+<body class="bg-white text-black font-mono p-0">
+  ${previewBanner()}
+  <header class="border-b-4 border-black px-6 py-5">
+    <h1 class="font-bold text-2xl">github-issue-collab</h1>
+  </header>
+
+  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
+    <p class="text-xs uppercase tracking-widest mb-3 text-yellow-400">Preview Complete</p>
+    <h2 class="font-bold text-4xl mb-2">Flow Summary</h2>
+    <p class="text-gray-400 text-sm">You just walked the full designer invite flow as a stranger would.</p>
+  </section>
+
+  <section class="border-b-4 border-black px-6 py-6">
+    <div class="grid grid-cols-3 border-2 border-black">
+      <div class="p-5 border-r-2 border-black text-center">
+        <p class="text-xs uppercase tracking-widest text-gray-500 mb-1">Total Time</p>
+        <p class="font-bold text-3xl">${elapsedStr}</p>
+      </div>
+      <div class="p-5 border-r-2 border-black text-center">
+        <p class="text-xs uppercase tracking-widest text-gray-500 mb-1">Decision Points</p>
+        <p class="font-bold text-3xl">${decisionPoints.length}</p>
+      </div>
+      <div class="p-5 text-center">
+        <p class="text-xs uppercase tracking-widest text-gray-500 mb-1">Likely Abandonment</p>
+        <p class="font-bold text-xl">Step 3</p>
+        <p class="text-xs text-gray-500">MCP config</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Decision Points</h3>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-10">#</th>
+            <th class="text-left p-3 border-r-2 border-white">Decision</th>
+            <th class="text-left p-3 border-r-2 border-white w-24">Friction</th>
+            <th class="text-left p-3">Notes</th>
+          </tr>
+        </thead>
+        <tbody>${decisionRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="border-b-4 border-black px-6 py-6 bg-yellow-50">
+    <h3 class="font-bold text-lg mb-2">What this means</h3>
+    <p class="text-sm text-gray-700 mb-3">
+      A non-technical designer can accept the invite and enter their name without friction. They will almost certainly abandon at Step 3 — configuring the MCP server requires running a terminal command or editing a JSON config file, which is outside the comfort zone of most designers.
+    </p>
+    <p class="text-sm text-gray-700">
+      Consider: adding a more guided setup page, a one-click installer, or a browser-based alternative that removes the CLI step entirely.
+    </p>
+  </section>
+
+  <section class="px-6 py-6">
+    <p class="text-sm text-gray-500 mb-4">
+      A real designer session was created for <strong>${name}</strong> during this preview. You can revoke it from the dashboard.
+    </p>
+    <a href="/dashboard" class="text-sm font-bold border-2 border-black px-4 py-2 inline-block hover:bg-black hover:text-white">← Back to Dashboard</a>
+  </section>
+</body>
+</html>`)
+      return
+    }
 
     const maxAge = 90 * 24 * 60 * 60
     res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)

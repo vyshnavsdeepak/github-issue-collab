@@ -7,7 +7,7 @@ import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
 import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
-import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
+import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo, handlePreview } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
 
@@ -72,6 +72,10 @@ app.post('/dashboard/revoke', (req, res) => {
 
 app.post('/dashboard/set-repo', (req, res) => {
   void handleDashboardSetRepo(req, res)
+})
+
+app.post('/dashboard/preview', (req, res) => {
+  void handlePreview(req, res)
 })
 
 app.get('/invite', (req, res) => {
