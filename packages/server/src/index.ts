@@ -80,9 +80,9 @@ export function createApp() {
           return
         }
 
-        const transport = new StreamableHTTPServerTransport({
+        const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (id) => transports.set(id, transport),
+          onsessioninitialized: (id: string) => { transports.set(id, transport) },
         })
         transport.onclose = () => {
           if (transport.sessionId) transports.delete(transport.sessionId)

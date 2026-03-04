@@ -12,6 +12,40 @@ import {
   removeLabel,
 } from './github.js'
 
+const CACHE_TTL_MS = 60_000
+
+interface CacheEntry {
+  result: { content: Array<{ type: string; text: string }> }
+  expiresAt: number
+}
+
+const cache = new Map<string, CacheEntry>()
+
+function cacheKey(owner: string, repo: string, toolName: string, args: Record<string, unknown>): string {
+  return `${owner}/${repo}:${toolName}:${JSON.stringify(args)}`
+}
+
+function cacheGet(key: string): CacheEntry['result'] | null {
+  const entry = cache.get(key)
+  if (!entry) return null
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key)
+    return null
+  }
+  return entry.result
+}
+
+function cacheSet(key: string, result: CacheEntry['result']): void {
+  cache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+}
+
+function cacheInvalidateRepo(owner: string, repo: string): void {
+  const prefix = `${owner}/${repo}:`
+  for (const k of cache.keys()) {
+    if (k.startsWith(prefix)) cache.delete(k)
+  }
+}
+
 type Role = 'developer' | 'designer'
 
 interface AuthContext {
@@ -35,6 +69,20 @@ function getBaseUrl(req: Request): string {
   const host = req.get('host') ?? 'localhost'
   const proto = process.env.VERCEL ? 'https' : req.protocol
   return `${proto}://${host}`
+}
+
+function getInviteBaseUrl(): string {
+  if (process.env.INVITE_BASE_URL) return process.env.INVITE_BASE_URL
+  if (process.env.COLLAB_URL) return process.env.COLLAB_URL
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+
+  const port = process.env.PORT ?? '3000'
+  const fallback = `http://localhost:${port}`
+  console.warn(
+    `[warn] VERCEL_URL is not set — invite URLs will use ${fallback}. ` +
+      `Set INVITE_BASE_URL or COLLAB_URL to override.`
+  )
+  return fallback
 }
 
 async function resolveAuth(req: Request): Promise<AuthContext | null> {
@@ -119,7 +167,7 @@ function getToolSchemas(role: Role) {
     },
     {
       name: 'get_collaboration_info',
-      description: 'Get active designer sessions, pending invite codes, and a fresh invite link',
+      description: 'Get active designer sessions and pending invite codes',
       inputSchema: { type: 'object', properties: {} },
     },
   ]
@@ -137,6 +185,11 @@ function getToolSchemas(role: Role) {
         },
         required: ['issue_number', 'label', 'action'],
       },
+    })
+    tools.push({
+      name: 'create_invite',
+      description: 'Create a new designer invite link (developer only)',
+      inputSchema: { type: 'object', properties: {} },
     })
   }
 
@@ -164,6 +217,9 @@ async function callTool(
 
   switch (toolName) {
     case 'list_issues': {
+      const key = cacheKey(owner, repo, toolName, { ...args, role: ctx.role })
+      const cached = cacheGet(key)
+      if (cached) return cached
       let issues = await listIssues({
         owner,
         repo,
@@ -173,10 +229,15 @@ async function callTool(
       if (ctx.role === 'designer') {
         issues = issues.filter((i) => i.labels.some((l) => l.name === 'designer-input'))
       }
-      return { content: [{ type: 'text', text: JSON.stringify(issues, null, 2) }] }
+      const result = { content: [{ type: 'text', text: JSON.stringify(issues, null, 2) }] }
+      cacheSet(key, result)
+      return result
     }
 
     case 'get_issue': {
+      const key = cacheKey(owner, repo, toolName, args)
+      const cached = cacheGet(key)
+      if (cached) return cached
       const issueNumber = Number(args['issue_number'])
       if (ctx.role === 'designer' && ctx.inviteCode) {
         void db.recordInviteEvent(ctx.inviteCode, 'issue_viewed')
@@ -195,7 +256,9 @@ async function callTool(
           return { ...c, role: parsed.role, body: parsed.text }
         }),
       }
-      return { content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }] }
+      const result = { content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }] }
+      cacheSet(key, result)
+      return result
     }
 
     case 'add_comment': {
@@ -206,6 +269,7 @@ async function callTool(
       }
       const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
       const comment = await addComment({ owner, repo, issueNumber, token, body: `${prefix}${body}` })
+      cacheInvalidateRepo(owner, repo)
       return { content: [{ type: 'text', text: `Comment added: ${comment.html_url}` }] }
     }
 
@@ -220,16 +284,15 @@ async function callTool(
       let commentBody = `${prefix}## Decision\n${decision}`
       if (rationale) commentBody += `\n\n**Rationale:** ${rationale}`
       const comment = await addComment({ owner, repo, issueNumber, token, body: commentBody })
+      cacheInvalidateRepo(owner, repo)
       return { content: [{ type: 'text', text: `Decision recorded: ${comment.html_url}` }] }
     }
 
     case 'get_collaboration_info': {
-      const [sessions, pendingInvites, newInvite] = await Promise.all([
+      const [sessions, pendingInvites] = await Promise.all([
         db.listSessionsForUser(ctx.userId),
         db.listPendingInvitesForUser(ctx.userId),
-        db.createInviteCode(ctx.userId),
       ])
-      void db.recordInviteEvent(newInvite.code, 'invite_generated')
       const info = {
         hosted_mcp_url: `${baseUrl}/mcp`,
         active_sessions: sessions.map((s) => ({
@@ -238,14 +301,22 @@ async function callTool(
           created_at: s.created_at,
           last_seen: s.last_seen,
         })),
-        pending_invites: pendingInvites.map((i) => ({
+        pending_invites: pendingInvites.filter((i) => !i.is_demo).map((i) => ({
           code: i.code,
-          invite_url: `${baseUrl}/invite?code=${i.code}`,
+          invite_url: `${getInviteBaseUrl()}/invite?code=${i.code}`,
           created_at: i.created_at,
         })),
-        new_invite_url: `${baseUrl}/invite?code=${newInvite.code}`,
       }
       return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] }
+    }
+
+    case 'create_invite': {
+      if (ctx.role !== 'developer') {
+        throw new Error('create_invite is only available to developers')
+      }
+      const invite = await db.createInviteCode(ctx.userId)
+      const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
+      return { content: [{ type: 'text', text: JSON.stringify({ invite_url: inviteUrl, code: invite.code }, null, 2) }] }
     }
 
     case 'label_issue': {
@@ -455,67 +526,9 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     await db.markInviteUsed(code)
     void db.recordInviteEvent(code, 'config_started')
 
-    const baseUrl = getBaseUrl(req)
-    const mcpConfig = JSON.stringify(
-      {
-        mcpServers: {
-          'github-collab': {
-            url: `${baseUrl}/mcp`,
-            headers: { Authorization: `Bearer ${sessionToken}` },
-          },
-        },
-      },
-      null,
-      2
-    )
-
-    const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${sessionToken}" \\\n  ${baseUrl}/mcp`
-
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Designer Access Ready — github-issue-collab</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
-    pre, code { font-family: monospace; }
-  </style>
-</head>
-<body class="bg-white text-black font-mono p-0">
-  <header class="border-b-4 border-black px-6 py-5">
-    <h1 class="font-bold text-2xl">github-issue-collab</h1>
-  </header>
-  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
-    <p class="text-xs uppercase tracking-widest mb-3 text-green-400">✓ Access Ready</p>
-    <h2 class="font-bold text-4xl mb-2">Welcome, ${name}</h2>
-    <p class="text-gray-400 text-sm">Add the config below to Claude to get started.</p>
-  </section>
-  <section class="px-6 py-10 border-b-4 border-black">
-    <h3 class="font-bold text-xl mb-2">Option A — CLI command</h3>
-    <p class="text-sm text-gray-600 mb-3">Run this in your terminal:</p>
-    <div class="flex items-start gap-3 mb-2">
-      <pre id="cli-cmd" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${cliCommand}</pre>
-      <button onclick="copyEl('cli-cmd', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
-    </div>
-  </section>
-  <section class="px-6 py-10">
-    <h3 class="font-bold text-xl mb-2">Option B — JSON config</h3>
-    <p class="text-sm text-gray-600 mb-3">Add to <code>claude_desktop_config.json</code> or Claude Code MCP settings:</p>
-    <div class="flex items-start gap-3 mb-4">
-      <pre id="mcp-config" class="bg-black text-white text-xs p-4 overflow-x-auto flex-1">${mcpConfig.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-      <button onclick="copyEl('mcp-config', this)" class="bg-black text-white text-xs font-bold px-3 py-2 border-2 border-black hover:bg-white hover:text-black shrink-0">Copy</button>
-    </div>
-    <p class="text-xs text-gray-500">You have designer role: you'll see only <code class="bg-gray-100 px-1">designer-input</code> labeled issues.</p>
-  </section>
-  <script>
-function copyEl(id, btn) {
-  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
-    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
-}
-  </script>
-</body>
-</html>`)
+    const maxAge = 90 * 24 * 60 * 60
+    res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
+    res.redirect('/designer')
   } catch (err) {
     res.status(500).send(`Error: ${err instanceof Error ? err.message : String(err)}`)
   }

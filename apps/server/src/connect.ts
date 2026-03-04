@@ -16,7 +16,8 @@ import {
   getFunnelForUser,
   type FunnelRow,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
+import type { Issue } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -31,6 +32,13 @@ function getBaseUrl(req: Request): string {
   const host = req.get('host') ?? 'localhost'
   const proto = process.env.VERCEL ? 'https' : req.protocol
   return `${proto}://${host}`
+}
+
+function getInviteBaseUrl(): string {
+  return (
+    process.env.INVITE_BASE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+  )
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -140,6 +148,26 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     return
   }
 
+  const appId = process.env.GITHUB_APP_ID
+  let privateKey: string | null = null
+  try { privateKey = loadPrivateKey() } catch { /* skip if key missing */ }
+
+  let issues: Issue[] = []
+  let installationRepos: Array<{ full_name: string }> = []
+  if (appId && privateKey && user.installation_id) {
+    try {
+      installationRepos = await getInstallationRepos(user.installation_id, appId, privateKey)
+    } catch { /* degrade gracefully */ }
+    if (user.repo) {
+      const [owner, repo] = user.repo.split('/')
+      try {
+        const token = await getInstallationToken(user.installation_id, appId, privateKey)
+        issues = await listIssues({ owner, repo, token, state: 'open', per_page: 25 })
+        issues = issues.filter(i => !(i as unknown as { pull_request?: unknown }).pull_request)
+      } catch { /* non-fatal */ }
+    }
+  }
+
   const [sessions, invites, funnel] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
@@ -183,18 +211,34 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
       </tr>`).join('')
     : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No active designers yet — create an invite link below</td></tr>`
 
+  const issueRows = issues.length
+    ? issues.map(issue => `
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">#${issue.number}</td>
+        <td class="p-3 border-r-2 border-black">
+          <a href="${esc(issue.html_url)}" target="_blank" rel="noopener" class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
+          ${issue.labels.length ? `<div class="mt-1">${issue.labels.map(labelBadge).join('')}</div>` : ''}
+        </td>
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">${esc(issue.user?.login ?? '—')}</td>
+        <td class="p-3 text-xs text-gray-500 whitespace-nowrap">${timeAgo(issue.updated_at)}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">${user.repo ? 'No open issues' : 'No repo configured'}</td></tr>`
+
   const inviteRows = invites.length
     ? invites.map(i => {
-        const url = `${baseUrl}/invite?code=${i.code}`
+        const url = `${getInviteBaseUrl()}/invite?code=${i.code}`
+        const actionCell = i.is_demo
+          ? `<span class="text-xs font-bold border-2 border-gray-400 px-2 py-0.5 text-gray-400">Demo — do not share</span>`
+          : `<button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>`
         return `
-      <tr class="border-t-2 border-black">
+      <tr class="border-t-2 border-black${i.is_demo ? ' opacity-50' : ''}">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
         <td class="p-3 border-r-2 border-black">
           <span id="inv-${i.code}" class="font-mono text-xs">${esc(url)}</span>
         </td>
         <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(i.created_at)}</td>
         <td class="p-3">
-          <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
+          ${actionCell}
         </td>
       </tr>`
       }).join('')
@@ -230,7 +274,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-8 bg-black text-white">
     <p class="text-xs uppercase tracking-widest mb-2 text-green-400">✓ Live</p>
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
-    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'}</p>
+    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${issues.length} open issue${issues.length === 1 ? '' : 's'}</p>
   </section>
 
   <!-- FUNNEL -->
@@ -258,9 +302,30 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <form method="POST" action="/dashboard/invite" class="inline">
-        <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
-      </form>
+      <div class="inline flex items-center gap-2">
+        <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
+        <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
+      </div>
+      <script>
+        async function createInvite() {
+          const btn = document.getElementById('new-invite-btn');
+          const display = document.getElementById('invite-url-display');
+          btn.disabled = true;
+          btn.textContent = '...';
+          try {
+            const res = await fetch('/dashboard/invite', { method: 'POST' });
+            const data = await res.json();
+            display.textContent = data.url;
+            display.classList.remove('hidden');
+            await navigator.clipboard.writeText(data.url).catch(() => {});
+            btn.textContent = '+ New Invite Link';
+          } catch (e) {
+            btn.textContent = 'Error';
+          }
+          btn.disabled = false;
+          setTimeout(() => location.reload(), 3000);
+        }
+      </script>
     </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm border-2 border-black">
@@ -294,6 +359,44 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
       </table>
     </div>
   </section>
+
+  <!-- ISSUES -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-lg">Open Issues</h3>
+      ${user.repo ? `<a href="https://github.com/${esc(user.repo)}/issues" target="_blank" rel="noopener" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white no-underline">View on GitHub →</a>` : ''}
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-16">#</th>
+            <th class="text-left p-3 border-r-2 border-white">Title / Labels</th>
+            <th class="text-left p-3 border-r-2 border-white w-32">Author</th>
+            <th class="text-left p-3 w-28">Updated</th>
+          </tr>
+        </thead>
+        <tbody>${issueRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- REPOSITORIES -->
+  ${installationRepos.length > 0 ? `<section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Repositories</h3>
+    <div class="border-2 border-black">
+      ${installationRepos.map((r, i) => {
+        const isActive = r.full_name === user.repo
+        return `<div class="${i > 0 ? 'border-t-2 border-black ' : ''}flex items-center justify-between px-4 py-3 ${isActive ? 'bg-black text-white' : ''}">
+          <span class="font-mono text-sm">${esc(r.full_name)}</span>
+          <span class="text-xs ml-4 shrink-0">${isActive
+            ? '<span class="border-2 border-white px-2 py-0.5">active</span>'
+            : `<form method="POST" action="/dashboard/set-repo" class="inline"><input type="hidden" name="repo" value="${esc(r.full_name)}"><button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Use this repo</button></form>`
+          }</span>
+        </div>`
+      }).join('')}
+    </div>
+  </section>` : ''}
 
   <!-- MCP CONFIG -->
   <section class="border-b-4 border-black px-6 py-6">
@@ -419,7 +522,8 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
 
   const invite = await createInviteCode(user.id)
   void recordInviteEvent(invite.code, 'invite_generated')
-  res.redirect('/dashboard')
+  const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
+  res.json({ code: invite.code, url: inviteUrl })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
@@ -437,8 +541,58 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
   res.redirect('/dashboard')
 }
 
+export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const repo = body['repo'] as string | undefined
+  if (!repo) { res.status(400).send('Missing repo'); return }
+
+  const appId = process.env.GITHUB_APP_ID
+  if (!appId) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+
+  let privateKey: string
+  try {
+    privateKey = loadPrivateKey()
+  } catch (err) {
+    res.status(500).send(err instanceof Error ? err.message : String(err))
+    return
+  }
+
+  let repos: Array<{ full_name: string }>
+  try {
+    repos = await getInstallationRepos(user.installation_id, appId, privateKey)
+  } catch (err) {
+    res.status(502).send(`GitHub API error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  if (!repos.some(r => r.full_name === repo)) {
+    res.status(403).send('Repo not accessible via this installation')
+    return
+  }
+
+  await updateUserRepo(user.id, repo)
+  res.redirect('/dashboard')
+}
+
 function esc(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function labelBadge(label: { name: string; color: string }): string {
+  const bg = `#${label.color}`
+  // Perceived luminance to pick readable text color
+  const r = parseInt(label.color.slice(0, 2), 16)
+  const g = parseInt(label.color.slice(2, 4), 16)
+  const b = parseInt(label.color.slice(4, 6), 16)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  const fg = lum > 0.5 ? '#000' : '#fff'
+  return `<span style="background:${esc(bg)};color:${fg};border:1px solid rgba(0,0,0,0.2)" class="inline-block text-xs px-1.5 py-0.5 font-mono font-bold mr-1">${esc(label.name)}</span>`
 }
 
 function loginPage(error?: string): string {

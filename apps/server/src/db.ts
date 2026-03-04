@@ -37,6 +37,9 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await db`
+    ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE
+  `
   await db`ALTER TABLE designer_sessions ADD COLUMN IF NOT EXISTS invite_code TEXT REFERENCES invite_codes(code)`
   await db`
     CREATE TABLE IF NOT EXISTS invite_events (
@@ -81,6 +84,7 @@ export interface InviteCode {
   code: string
   user_id: string
   used: boolean
+  is_demo: boolean
   created_at: string
 }
 
@@ -167,11 +171,11 @@ export async function listSessionsForUser(userId: string): Promise<DesignerSessi
   return rows as DesignerSession[]
 }
 
-export async function createInviteCode(userId: string): Promise<InviteCode> {
+export async function createInviteCode(userId: string, isDemo = false): Promise<InviteCode> {
   const db = sql()
   const code = randomUUID()
   const rows = await db`
-    INSERT INTO invite_codes (code, user_id) VALUES (${code}, ${userId}) RETURNING *
+    INSERT INTO invite_codes (code, user_id, is_demo) VALUES (${code}, ${userId}, ${isDemo}) RETURNING *
   `
   return rows[0] as InviteCode
 }
@@ -225,4 +229,16 @@ export async function getFunnelForUser(userId: string): Promise<FunnelRow[]> {
     ORDER BY ic.created_at DESC
   `
   return rows as FunnelRow[]
+}
+
+export async function countInviteCodes(): Promise<number> {
+  const db = sql()
+  const rows = await db`SELECT COUNT(*)::int AS n FROM invite_codes`
+  return (rows[0] as { n: number }).n
+}
+
+export async function getFirstUser(): Promise<User | null> {
+  const db = sql()
+  const rows = await db`SELECT * FROM users ORDER BY created_at ASC LIMIT 1`
+  return (rows[0] as User) ?? null
 }

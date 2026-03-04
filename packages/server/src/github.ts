@@ -50,7 +50,7 @@ export async function getInstallationToken(
 
   if (process.env.COLLAB_KEY && !privateKey) {
     // Power-user path: fetch installation token from hosted server using COLLAB_KEY
-    const collabUrl = process.env.COLLAB_URL ?? 'https://server-pink-six-81.vercel.app'
+    const collabUrl = process.env.COLLAB_URL ?? 'https://github-issue-collab-server.vercel.app'
     const res = await fetch(`${collabUrl}/token`, {
       method: 'POST',
       headers: {
