@@ -192,7 +192,10 @@ async fn process_task(
 async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::UnboundedSender<String>) {
     let lower = cmd.to_lowercase();
 
-    if lower.contains("rebase all") {
+    if lower.contains("merge all") || lower.contains("merge prs") {
+        log(log_tx, "[builder] Command: checking and merging open PRs");
+        crate::monitor::check_and_merge_open_prs(config, log_tx).await;
+    } else if lower.contains("rebase all") {
         log(log_tx, "[builder] Command: triggering rebase");
         crate::monitor::notify_rebase(config, log_tx).await;
     } else if lower.starts_with("nudge all") || lower.starts_with("broadcast ") {
@@ -331,6 +334,12 @@ pub async fn run(
 
         log(&log_tx, "[builder] Checking for merged PRs...");
         crate::monitor::notify_rebase(&config, &log_tx).await;
+
+        log(&log_tx, "[builder] Checking and merging open PRs...");
+        crate::monitor::check_and_merge_open_prs(&config, &log_tx).await;
+
+        log(&log_tx, "[builder] Cleaning up orphaned worktrees...");
+        crate::monitor::cleanup_orphaned_worktrees(&config, &log_tx).await;
 
         log(&log_tx, "[builder] Cleaning up finished windows...");
         crate::monitor::cleanup_finished(&config, &log_tx).await;

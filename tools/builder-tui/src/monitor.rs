@@ -484,6 +484,137 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     }
 }
 
+/// Check all open PRs: merge CLEAN ones, rebase BEHIND ones, log DIRTY/BLOCKED.
+pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
+    let prs = github::list_open_prs(&config.repo).await.unwrap_or_default();
+    if prs.is_empty() {
+        return;
+    }
+
+    log(log_tx, format!("[merge] Checking {} open PR(s)...", prs.len()));
+
+    // Ensure we have latest main refs
+    let _ = tokio::process::Command::new("git")
+        .args(["-C", &config.repo_root, "fetch", "origin", "main", "--quiet"])
+        .output()
+        .await;
+
+    for (pr_num, head_branch) in &prs {
+        let info = match github::get_pr_info(&config.repo, *pr_num).await {
+            Ok(i) => i,
+            Err(e) => {
+                log(log_tx, format!("[merge] PR #{pr_num}: failed to get state: {e}"));
+                continue;
+            }
+        };
+
+        // Derive issue number from branch name e.g. "feature/issue-42"
+        let issue_num: Option<u64> = head_branch
+            .strip_prefix("feature/issue-")
+            .and_then(|s| s.parse().ok());
+
+        match info.merge_state.as_str() {
+            "CLEAN" => {
+                log(log_tx, format!("[merge] PR #{pr_num} is CLEAN — merging"));
+                toast(log_tx, "INFO", &format!("Auto-merging PR #{pr_num}"));
+                match github::merge_pr(&config.repo, *pr_num).await {
+                    Ok(()) => {
+                        log(log_tx, format!("[merge] PR #{pr_num} merged successfully"));
+                        toast(log_tx, "SUCCESS", &format!("Merged PR #{pr_num}!"));
+                    }
+                    Err(e) => {
+                        log(log_tx, format!("[merge] PR #{pr_num} merge failed: {e}"));
+                        toast(log_tx, "ERROR", &format!("PR #{pr_num} merge failed"));
+                    }
+                }
+            }
+            "BEHIND" => {
+                log(log_tx, format!("[merge] PR #{pr_num} is BEHIND main — rebasing"));
+                if let Some(n) = issue_num {
+                    let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
+                    if std::path::Path::new(&worktree).exists() {
+                        let clean = test_rebase(&worktree, n).await;
+                        if clean {
+                            // Rebase applied by test_rebase — push directly
+                            let push = tokio::process::Command::new("git")
+                                .args(["-C", &worktree, "push", "--force-with-lease", "origin", "HEAD"])
+                                .output()
+                                .await;
+                            match push {
+                                Ok(o) if o.status.success() => {
+                                    log(log_tx, format!("[merge] PR #{pr_num}: rebased+pushed — will be CLEAN on next check"));
+                                    toast(log_tx, "INFO", &format!("PR #{pr_num} rebased+pushed"));
+                                }
+                                _ => {
+                                    // Fall back to sending command to the tmux window
+                                    let windows = list_windows(config).await;
+                                    for (idx, name) in &windows {
+                                        if extract_issue_num(name) == Some(n) {
+                                            let pane = capture_pane(config, *idx).await;
+                                            let state = classify_pane(&pane);
+                                            let target = format!("{}:{}", config.session, idx);
+                                            if state == "shell" {
+                                                let cmd = format!("cd '{}' && git push --force-with-lease origin HEAD", worktree);
+                                                send_keys(config, &target, &cmd).await;
+                                            } else if state == "claude_repl" {
+                                                send_keys(config, &target, "Please run: git push --force-with-lease origin HEAD to update your PR.").await;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // If !clean: conflict marker written by test_rebase, poller surfaces it
+                    }
+                }
+            }
+            "DIRTY" => {
+                log(log_tx, format!("[merge] PR #{pr_num} ({head_branch}) is DIRTY (merge conflicts)"));
+                toast(log_tx, "WARNING", &format!("PR #{pr_num} has merge conflicts"));
+            }
+            "BLOCKED" => {
+                log(log_tx, format!("[merge] PR #{pr_num} is BLOCKED (failing CI or awaiting review)"));
+            }
+            other => {
+                log(log_tx, format!("[merge] PR #{pr_num}: merge state = {other}"));
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Clean up orphaned worktrees whose GitHub issues are now closed.
+pub async fn cleanup_orphaned_worktrees(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
+    if config.repo_root.is_empty() {
+        return;
+    }
+    let issues = crate::poller::scan_worktrees(&config.repo_root);
+    let windows = list_windows(config).await;
+    let active_issues: std::collections::HashSet<u64> =
+        windows.iter().filter_map(|(_, n)| extract_issue_num(n)).collect();
+
+    for issue_num in issues {
+        if active_issues.contains(&issue_num) {
+            continue; // has a live window — cleanup_finished handles it
+        }
+        let state = github::get_issue_state(&config.repo, issue_num)
+            .await
+            .unwrap_or_default();
+        if state == "CLOSED" {
+            let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
+            log(log_tx, format!("[cleanup] Orphaned worktree issue-{issue_num} closed — removing"));
+            toast(log_tx, "INFO", &format!("Cleaned up closed #{issue_num}"));
+            let _ = tokio::process::Command::new("git")
+                .args(["-C", &config.repo_root, "worktree", "remove", "--force", &worktree])
+                .output()
+                .await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
+}
+
 /// Scan for worktrees that have no tmux window and spin them up (respects max_concurrent).
 pub async fn promote_orphaned_worktrees(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
     let active = count_active_workers(config).await;

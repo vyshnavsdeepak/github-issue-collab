@@ -225,7 +225,7 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let (title, content) = match &app.mode {
         Mode::Normal => {
-            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [:] Cmd  [d] Detail  [p] Prompt  [n] New  [q] Quit";
+            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [m] Merge PRs  [r] Refresh  [l] Log  [:] Cmd  [d] Detail  [p] Prompt  [n] New  [q] Quit";
             let msg = if app.status_msg.is_empty() {
                 hint.to_string()
             } else {

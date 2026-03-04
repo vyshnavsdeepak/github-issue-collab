@@ -140,6 +140,61 @@ pub async fn merged_prs_since(repo: &str, since: &str) -> Result<Vec<(u64, Strin
     Ok(result)
 }
 
+pub struct PrInfo {
+    /// CLEAN | BEHIND | BLOCKED | DIRTY | UNKNOWN
+    pub merge_state: String,
+}
+
+/// Get the merge-state of an open PR.
+pub async fn get_pr_info(repo: &str, pr_num: u64) -> Result<PrInfo> {
+    let num = pr_num.to_string();
+    let out = run_gh(&[
+        "pr", "view", &num,
+        "--repo", repo,
+        "--json", "mergeStateStatus",
+        "-q", ".mergeStateStatus",
+    ])
+    .await?;
+    Ok(PrInfo { merge_state: out.trim().to_string() })
+}
+
+/// List all open PRs: returns (pr_number, head_branch_name).
+pub async fn list_open_prs(repo: &str) -> Result<Vec<(u64, String)>> {
+    let out = run_gh(&[
+        "pr", "list",
+        "--repo", repo,
+        "--state", "open",
+        "--json", "number,headRefName",
+        "-q", r#".[] | "\(.number) \(.headRefName)""#,
+    ])
+    .await
+    .unwrap_or_default();
+
+    let mut result = Vec::new();
+    for line in out.lines() {
+        let mut parts = line.trim().splitn(2, ' ');
+        if let (Some(num_str), Some(branch)) = (parts.next(), parts.next()) {
+            if let Ok(num) = num_str.parse::<u64>() {
+                result.push((num, branch.to_string()));
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Merge a PR with squash strategy and delete the head branch.
+pub async fn merge_pr(repo: &str, pr_num: u64) -> Result<()> {
+    let num = pr_num.to_string();
+    run_gh(&[
+        "pr", "merge", &num,
+        "--repo", repo,
+        "--squash",
+        "--delete-branch",
+    ])
+    .await?;
+    Ok(())
+}
+
 pub async fn invoke_claude(prompt: &str) -> Result<String> {
     let out = Command::new("claude")
         .args(["--dangerously-skip-permissions", "--print", prompt])

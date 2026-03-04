@@ -268,6 +268,12 @@ impl App {
                 self.input.clear();
                 self.status_msg = "Enter issue number to spin up a worker".into();
             }
+            KeyCode::Char('m') => {
+                if let Some(tx) = &self.cmd_tx {
+                    let _ = tx.send("merge all".to_string());
+                    self.status_msg = "Checking and merging open PRs…".into();
+                }
+            }
             _ => {}
         }
         false

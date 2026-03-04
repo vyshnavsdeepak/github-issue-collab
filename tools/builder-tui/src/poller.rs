@@ -273,6 +273,11 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
     });
     let is_sleeping = pane.contains("Sleeping ");
     let has_posted = pane.contains("posted a comment");
+    // Detect PR creation: Claude prints the GitHub PR URL when creating one.
+    // This is the most reliable "done" signal — catches the case where Claude
+    // exits to shell before builder-status.json is updated.
+    let pr_url_in_pane = pane.contains("/pull/")
+        && (pane.contains("github.com/") || pane.contains("Created pull request"));
 
     if is_active {
         "active".to_string()
@@ -280,15 +285,15 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
         "posted".to_string()
     } else if is_sleeping {
         "sleeping".to_string()
-    } else if (has_bypass || has_claude_prompt) && has_pr {
+    } else if (has_bypass || has_claude_prompt) && (has_pr || pr_url_in_pane) {
         "done".to_string()
     } else if has_bypass || has_claude_prompt {
         "idle".to_string()
-    } else if is_shell && has_pr {
+    } else if is_shell && (has_pr || pr_url_in_pane) {
+        // Claude created a PR and exited — done, do not relaunch
         "done".to_string()
     } else if is_shell {
-        // Shell visible — Claude exited. If we've seen claude running before, it's "shell" (needs relaunch).
-        // If the window is fresh and never had Claude, it's "queued".
+        // Shell visible — Claude exited. Distinguish: had Claude trace = needs relaunch; fresh = queued.
         let had_claude = pane.contains("claude")
             || pane.contains("Implement")
             || pane.contains("feature/issue-");
