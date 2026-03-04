@@ -12,6 +12,40 @@ import {
   removeLabel,
 } from './github.js'
 
+const CACHE_TTL_MS = 60_000
+
+interface CacheEntry {
+  result: { content: Array<{ type: string; text: string }> }
+  expiresAt: number
+}
+
+const cache = new Map<string, CacheEntry>()
+
+function cacheKey(owner: string, repo: string, toolName: string, args: Record<string, unknown>): string {
+  return `${owner}/${repo}:${toolName}:${JSON.stringify(args)}`
+}
+
+function cacheGet(key: string): CacheEntry['result'] | null {
+  const entry = cache.get(key)
+  if (!entry) return null
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key)
+    return null
+  }
+  return entry.result
+}
+
+function cacheSet(key: string, result: CacheEntry['result']): void {
+  cache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+}
+
+function cacheInvalidateRepo(owner: string, repo: string): void {
+  const prefix = `${owner}/${repo}:`
+  for (const k of cache.keys()) {
+    if (k.startsWith(prefix)) cache.delete(k)
+  }
+}
+
 type Role = 'developer' | 'designer'
 
 interface AuthContext {
@@ -182,6 +216,9 @@ async function callTool(
 
   switch (toolName) {
     case 'list_issues': {
+      const key = cacheKey(owner, repo, toolName, { ...args, role: ctx.role })
+      const cached = cacheGet(key)
+      if (cached) return cached
       let issues = await listIssues({
         owner,
         repo,
@@ -191,10 +228,15 @@ async function callTool(
       if (ctx.role === 'designer') {
         issues = issues.filter((i) => i.labels.some((l) => l.name === 'designer-input'))
       }
-      return { content: [{ type: 'text', text: JSON.stringify(issues, null, 2) }] }
+      const result = { content: [{ type: 'text', text: JSON.stringify(issues, null, 2) }] }
+      cacheSet(key, result)
+      return result
     }
 
     case 'get_issue': {
+      const key = cacheKey(owner, repo, toolName, args)
+      const cached = cacheGet(key)
+      if (cached) return cached
       const issueNumber = Number(args['issue_number'])
       const [issue, comments] = await Promise.all([
         getIssue({ owner, repo, issueNumber, token }),
@@ -210,7 +252,9 @@ async function callTool(
           return { ...c, role: parsed.role, body: parsed.text }
         }),
       }
-      return { content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }] }
+      const result = { content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }] }
+      cacheSet(key, result)
+      return result
     }
 
     case 'add_comment': {
@@ -218,6 +262,7 @@ async function callTool(
       const body = String(args['body'])
       const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
       const comment = await addComment({ owner, repo, issueNumber, token, body: `${prefix}${body}` })
+      cacheInvalidateRepo(owner, repo)
       return { content: [{ type: 'text', text: `Comment added: ${comment.html_url}` }] }
     }
 
@@ -229,6 +274,7 @@ async function callTool(
       let commentBody = `${prefix}## Decision\n${decision}`
       if (rationale) commentBody += `\n\n**Rationale:** ${rationale}`
       const comment = await addComment({ owner, repo, issueNumber, token, body: commentBody })
+      cacheInvalidateRepo(owner, repo)
       return { content: [{ type: 'text', text: `Decision recorded: ${comment.html_url}` }] }
     }
 
