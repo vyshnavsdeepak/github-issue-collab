@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -6,7 +8,9 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, ToastLevel};
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -34,18 +38,34 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     draw_footer(f, app, chunks[2]);
+
+    // Toast overlay — rendered last so it appears on top
+    draw_toasts(f, app, area);
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let backoff = app.backoff_status();
-    let refresh_ago = {
+
+    let polling = app.is_polling.load(Ordering::Relaxed);
+    let scan_span = if polling {
+        let spinner = SPINNER[(app.frame as usize) % SPINNER.len()];
+        Span::styled(
+            format!("{spinner} Polling..."),
+            Style::default().fg(Color::Cyan),
+        )
+    } else {
         let secs = app.last_refresh_secs();
-        if secs < 60 {
+        let ago = if secs < 60 {
             format!("{secs}s ago")
         } else {
             format!("{}m ago", secs / 60)
-        }
+        };
+        Span::styled(
+            format!("✓ Last scan: {ago}"),
+            Style::default().fg(Color::Green),
+        )
     };
+
     let next_scan = match app.next_scan_remaining_secs() {
         Some(s) if s > 0 => format!("{s}s"),
         Some(_) => "now".to_string(),
@@ -82,7 +102,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::raw(format!(" Backoff: {backoff}")),
             Span::raw("   "),
-            Span::raw(format!("Last scan: {refresh_ago}")),
+            scan_span,
             Span::raw("   "),
             Span::styled(
                 format!("Next scan: {next_scan}"),
@@ -199,7 +219,7 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let (title, content) = match &app.mode {
         Mode::Normal => {
-            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [q] Quit";
+            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [:] Command  [q] Quit";
             let msg = if app.status_msg.is_empty() {
                 hint.to_string()
             } else {
@@ -222,6 +242,10 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "Broadcast to idle workers".to_string(),
             format!(" > {}_", app.input),
         ),
+        Mode::Command => (
+            "Builder Command".to_string(),
+            format!(" : {}_", app.input),
+        ),
     };
 
     let block = Block::default()
@@ -233,6 +257,64 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
+fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
+    if app.toasts.is_empty() {
+        return;
+    }
+
+    const TOAST_WIDTH: u16 = 42;
+    const TOAST_HEIGHT: u16 = 3;
+    const MAX_VISIBLE: usize = 4;
+
+    // Show newest toasts on top (take last MAX_VISIBLE, reversed)
+    let visible: Vec<_> = app
+        .toasts
+        .iter()
+        .rev()
+        .take(MAX_VISIBLE)
+        .collect();
+
+    let total_height = visible.len() as u16 * TOAST_HEIGHT;
+    if area.width < TOAST_WIDTH + 2 || area.height < total_height + 2 {
+        return;
+    }
+
+    let start_x = area.right().saturating_sub(TOAST_WIDTH + 1);
+    let start_y = area.y + 1; // Below top border
+
+    for (i, toast) in visible.iter().enumerate() {
+        let y = start_y + i as u16 * TOAST_HEIGHT;
+        if y + TOAST_HEIGHT > area.bottom() {
+            break;
+        }
+
+        let toast_rect = Rect {
+            x: start_x,
+            y,
+            width: TOAST_WIDTH,
+            height: TOAST_HEIGHT,
+        };
+
+        let (icon, border_color, title) = match toast.level {
+            ToastLevel::Success => ("✅", Color::Green, "Done"),
+            ToastLevel::Info => ("ℹ", Color::Cyan, "Info"),
+            ToastLevel::Warning => ("⚠", Color::Yellow, "Warning"),
+            ToastLevel::Error => ("✗", Color::Red, "Error"),
+        };
+
+        let max_msg_width = (TOAST_WIDTH as usize).saturating_sub(4);
+        let msg: String = toast.message.chars().take(max_msg_width).collect();
+
+        let block = Block::default()
+            .title(format!(" {icon} {title} "))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+
+        let para = Paragraph::new(msg).block(block);
+        f.render_widget(para, toast_rect);
+    }
+}
+
 fn status_icon(status: &str) -> String {
     match status {
         "active" => "🟢 active".to_string(),
@@ -242,6 +324,7 @@ fn status_icon(status: &str) -> String {
         "queued" => "⏳ queued".to_string(),
         "sleeping" => "💤 sleeping".to_string(),
         "posted" => "✅ posted".to_string(),
+        "no-window" => "👻 no-window".to_string(),
         _ => "❓ unknown".to_string(),
     }
 }
@@ -255,6 +338,7 @@ fn status_style(status: &str) -> Style {
         "queued" => Style::default().fg(Color::DarkGray),
         "sleeping" => Style::default().fg(Color::Blue),
         "posted" => Style::default().fg(Color::Cyan),
+        "no-window" => Style::default().fg(Color::Magenta),
         _ => Style::default(),
     }
 }

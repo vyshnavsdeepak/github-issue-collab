@@ -7,6 +7,7 @@ mod poller;
 mod ui;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use app::App;
@@ -79,25 +80,38 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Arc::new(config);
 
-    // Channel: poller -> main thread
-    let (tx, rx) = watch::channel(Vec::new());
+    // Shared polling indicator (set by poller, read by UI)
+    let is_polling = Arc::new(AtomicBool::new(false));
+
+    // Merged log channel: both poller and builder write here, App reads
+    let (log_tx, log_rx) = mpsc::unbounded_channel::<String>();
+
+    // Channel: poller -> App (worker states)
+    let (worker_tx, worker_rx) = watch::channel(Vec::new());
 
     // Spawn background poller
-    let session_clone = config.session.clone();
-    let interval = config.interval_secs;
-    tokio::spawn(async move {
-        poller::run(session_clone, interval, tx).await;
-    });
+    {
+        let session = config.session.clone();
+        let interval = config.interval_secs;
+        let repo_root = config.repo_root.clone();
+        let is_polling = Arc::clone(&is_polling);
+        let log_tx = log_tx.clone();
+        tokio::spawn(async move {
+            poller::run(session, interval, worker_tx, log_tx, repo_root, is_polling).await;
+        });
+    }
+
+    // Command channel: App -> builder
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<String>();
 
     // Optional builder task
-    let log_rx = if config.run_builder {
-        let (log_tx, log_rx) = mpsc::unbounded_channel::<String>();
-        let backoff = Arc::new(Mutex::new(BackoffState::new()));
+    let cmd_tx_for_app = if config.run_builder {
         let config_clone = Arc::clone(&config);
+        let backoff = Arc::new(Mutex::new(BackoffState::new()));
         tokio::spawn(async move {
-            builder::run(config_clone, log_tx, backoff).await;
+            builder::run(config_clone, log_tx, backoff, cmd_rx).await;
         });
-        Some(log_rx)
+        Some(cmd_tx)
     } else {
         None
     };
@@ -109,7 +123,13 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(config.session.clone(), rx, log_rx);
+    let mut app = App::new(
+        config.session.clone(),
+        worker_rx,
+        Some(log_rx),
+        is_polling,
+        cmd_tx_for_app,
+    );
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;

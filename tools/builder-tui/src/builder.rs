@@ -6,6 +6,10 @@ use crate::config::Config;
 use crate::github;
 use crate::monitor::BackoffState;
 
+fn toast(tx: &mpsc::UnboundedSender<String>, level: &str, msg: &str) {
+    let _ = tx.send(format!("__TOAST_{level}_{msg}__"));
+}
+
 #[derive(serde::Deserialize)]
 struct Task {
     title: String,
@@ -101,6 +105,8 @@ async fn process_task(
     };
 
     log(log_tx, format!("[builder] Created issue #{issue_num}"));
+    let title_preview: String = task.title.chars().take(30).collect();
+    toast(log_tx, "SUCCESS", &format!("Filed #{issue_num}: {title_preview}"));
 
     let comment = format!(
         "🔨 **Vyshnav (Builder):** Picked this up → created #{}: **{}**. Spinning up a worktree now.\n\n**— Vyshnav (simulated builder)**",
@@ -161,14 +167,59 @@ async fn process_task(
     log(log_tx, format!("[builder] Launched Claude in {}:{window} for issue #{issue_num}", config.session));
 }
 
+async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::UnboundedSender<String>) {
+    let lower = cmd.to_lowercase();
+
+    if lower.contains("rebase all") {
+        log(log_tx, "[builder] Command: triggering rebase");
+        crate::monitor::notify_rebase(config, log_tx).await;
+    } else if lower.starts_with("nudge all") || lower.starts_with("broadcast ") {
+        let msg = if lower.starts_with("broadcast ") {
+            &cmd["broadcast ".len()..]
+        } else {
+            "continue with the task"
+        };
+        log(log_tx, format!("[builder] Command: broadcasting to idle workers: {msg}"));
+        let windows = crate::monitor::list_windows(config).await;
+        for (idx, _) in &windows {
+            let pane = {
+                let target = format!("{}:{}", config.session, idx);
+                tokio::process::Command::new(&config.tmux)
+                    .args(["capture-pane", "-t", &target, "-p"])
+                    .output()
+                    .await
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default()
+            };
+            if pane.contains("bypass permissions on") {
+                let target = format!("{}:{}", config.session, idx);
+                let _ = tokio::process::Command::new(&config.tmux)
+                    .args(["send-keys", "-t", &target, msg, "Enter"])
+                    .output()
+                    .await;
+            }
+        }
+    } else {
+        // Pass through as-is to a log message — future: could invoke claude with command
+        log(log_tx, format!("[builder] Unrecognized command (logged only): {cmd}"));
+    }
+}
+
 pub async fn run(
     config: Arc<Config>,
     log_tx: mpsc::UnboundedSender<String>,
     backoff: Arc<Mutex<BackoffState>>,
+    mut cmd_rx: mpsc::UnboundedReceiver<String>,
 ) {
     log(&log_tx, "[builder] Starting builder loop...");
 
     loop {
+        // Drain any pending commands first (higher priority than scheduled scan)
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            log(&log_tx, format!("[builder] Command received: {cmd}"));
+            handle_command(&config, &cmd, &log_tx).await;
+        }
+
         // Check backoff
         {
             let state = backoff.lock().await;
@@ -221,6 +272,7 @@ pub async fn run(
                 if is_rate_limited(&err_str) {
                     let wait = parse_retry_after(&err_str);
                     log(&log_tx, format!("[builder] Rate limited, backing off {wait}s"));
+                    toast(&log_tx, "WARNING", &format!("Rate limited — {wait}s"));
                     backoff.lock().await.set(wait);
                     sleep(Duration::from_secs(30)).await;
                     continue;
