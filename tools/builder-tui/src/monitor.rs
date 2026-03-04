@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
@@ -235,7 +236,7 @@ pub async fn monitor_windows(
             );
             toast(log_tx, "INFO", &format!("Nudged #{issue_num}"));
             let msg = format!(
-                "Have you pushed the branch and opened a PR to main referencing #{}? If not, please do that now.",
+                "Have you pushed the branch and opened a PR to main referencing #{}? If not, please do that now. Check git status, commit any uncommitted changes, then: git push origin HEAD && gh pr create --base main --title \"$(git log -1 --format=%s)\" --body \"Closes #{issue_num}\"",
                 issue_num
             );
             send_keys(config, &target, &msg).await;
@@ -244,6 +245,17 @@ pub async fn monitor_windows(
                 "🔧 **Vyshnav (Builder):** Nudged Claude on issue #{issue_num} — was idle without a PR.\n\n**— Vyshnav (simulated builder)**"
             );
             let _ = github::post_comment(&config.repo, config.discussion_issue, &comment).await;
+        } else if state == "claude_repl" && pr_exists {
+            // Claude is idle and PR is already open — nudge to check for review comments
+            let pr = pr_nums.first().copied().unwrap_or(0);
+            log(
+                log_tx,
+                format!("[monitor] Issue #{issue_num}: Claude idle, PR #{pr} open — checking for review"),
+            );
+            let msg = format!(
+                "PR #{pr} is open for issue #{issue_num}. Please check if there are any review comments to address: gh pr view {pr} --comments. If the PR looks good and CI passes, you can wait for merge.",
+            );
+            send_keys(config, &target, &msg).await;
         } else if state == "shell" && !pr_exists {
             let active = count_active_workers(config).await;
             if active >= config.max_concurrent {
@@ -267,14 +279,18 @@ pub async fn monitor_windows(
 
             let branch = format!("feature/issue-{issue_num}");
             let claude_prompt = format!(
-                "Implement GitHub issue #{issue_num} in this repo. Push branch {branch} and open a PR to main referencing #{issue_num}. Work autonomously."
+                "Continue implementing GitHub issue #{issue_num} in this repo. Check what has already been done (git log, git status, existing code). Finish the implementation, commit, push branch {branch}, and open a PR to main referencing #{issue_num}. Work autonomously."
             );
-            let escaped = claude_prompt.replace('\'', "'\\''");
-            let cmd = format!(
-                "cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'",
-                worktree, escaped
+            let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
+            let script = format!(
+                "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
+                worktree,
+                claude_prompt.replace('\'', "'\\''")
             );
-            send_keys(config, &target, &cmd).await;
+            if std::fs::write(&script_path, &script).is_ok() {
+                let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                send_keys(config, &target, &script_path).await;
+            }
 
             log(
                 log_tx,
@@ -433,16 +449,20 @@ pub async fn promote_orphaned_worktrees(config: &Config, log_tx: &mpsc::Unbounde
         let worktree = format!("{}/.claude/worktrees/{name}", config.repo_root);
         let branch = format!("feature/issue-{issue_num}");
         let claude_prompt = format!(
-            "Continue implementing GitHub issue #{issue_num} in this repo. Check what has already been done (git log, existing code), finish the implementation, commit, push branch {branch}, and open a PR to main referencing #{issue_num}. Work autonomously."
+            "Continue implementing GitHub issue #{issue_num} in this repo. Check what has already been done (git log, git status, existing code), finish the implementation, commit, push branch {branch}, and open a PR to main referencing #{issue_num}. Work autonomously."
         );
-        let escaped = claude_prompt.replace('\'', "'\\''");
-        let cmd = format!(
-            "cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'",
-            worktree, escaped
+        let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
+        let script = format!(
+            "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
+            worktree,
+            claude_prompt.replace('\'', "'\\''")
         );
+        if std::fs::write(&script_path, &script).is_ok() {
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        }
 
         let target = format!("{}:{name}", config.session);
-        send_keys(config, &target, &cmd).await;
+        send_keys(config, &target, &script_path).await;
 
         log(log_tx, format!("[monitor] Promoted orphaned worktree → launched #{issue_num}"));
         toast(log_tx, "INFO", &format!("Launched #{issue_num}"));

@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -136,12 +137,24 @@ pub async fn launch_worker(
         "Implement GitHub issue #{issue_num} in this repo.\n\nTitle: {title}\n\nSpec:\n{body}\n\nInstructions:\n- Read the relevant source files first to understand the codebase\n- Implement the feature in apps/server/src/\n- Commit with a clear message (no Co-Authored-By)\n- Push branch {branch}\n- Open a PR to main referencing #{issue_num} in the PR body\n- Work autonomously, do not ask for confirmation"
     );
 
-    let escaped = claude_prompt.replace('\'', "'\\''");
-    let cmd = format!("cd '{}' && unset CLAUDECODE && claude --dangerously-skip-permissions '{}'", worktree, escaped);
+    let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
+    let script = format!(
+        "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
+        worktree,
+        claude_prompt.replace('\'', "'\\''")
+    );
+    if let Err(e) = std::fs::write(&script_path, &script) {
+        log(log_tx, format!("[builder] Failed to write script {script_path}: {e}"));
+        return;
+    }
+    let _ = std::fs::set_permissions(
+        &script_path,
+        std::fs::Permissions::from_mode(0o755),
+    );
 
     let target = format!("{}:{window}", config.session);
     let _ = tokio::process::Command::new(&config.tmux)
-        .args(["send-keys", "-t", &target, &cmd, "Enter"])
+        .args(["send-keys", "-t", &target, &script_path, "Enter"])
         .output()
         .await;
 

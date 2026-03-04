@@ -13,9 +13,39 @@ pub struct BuilderStatus {
 pub struct WorkerState {
     pub window_index: usize,
     pub window_name: String,
-    pub status: String,  // "active" | "idle" | "shell" | "done" | "unknown" | "no-window"
+    /// Pane/Claude state: "active" | "idle" | "shell" | "done" | "queued" | "sleeping" | "posted" | "no-window"
+    pub status: String,
     pub pr: Option<String>,
     pub last_output: String,
+    /// Whether the worktree directory exists on disk
+    pub worktree_exists: bool,
+    /// The feature branch name for this issue
+    pub branch_name: String,
+    /// Richer pipeline status for at-a-glance: WT→BR→PR
+    pub pipeline: String,
+}
+
+fn compute_pipeline(worktree_exists: bool, branch_name: &str, pr: &Option<String>, status: &str) -> String {
+    let wt = if worktree_exists { "🌳" } else { "·" };
+    // Check if branch exists via git
+    let br = if worktree_exists { "🌿" } else { "·" };
+    let pr_part = match pr {
+        Some(p) => p.clone(),
+        None => "·".to_string(),
+    };
+    let state = match status {
+        "active" => "⚡",
+        "idle" => "⏸",
+        "shell" => "🐚",
+        "done" => "✅",
+        "queued" => "⏳",
+        "sleeping" => "💤",
+        "posted" => "📮",
+        "no-window" => "👻",
+        _ => "?",
+    };
+    let _ = branch_name;
+    format!("{wt}{br}{pr_part} {state}")
 }
 
 pub async fn run(
@@ -41,7 +71,7 @@ pub async fn run(
         let builder_status = load_builder_status();
 
         // Fast path: get tmux windows
-        let mut states = poll_tmux_windows(&session, &builder_status);
+        let mut states = poll_tmux_windows(&session, &builder_status, &repo_root);
 
         // Slow path: merge orphaned worktrees
         if (do_slow || first_run) && !repo_root.is_empty() {
@@ -53,12 +83,19 @@ pub async fn run(
                 let name = format!("issue-{issue_num}");
                 if !tmux_names.contains(&name) {
                     let pr = builder_status.prs.get(&name).cloned();
+                    let worktree_path = format!("{repo_root}/.claude/worktrees/{name}");
+                    let worktree_exists = std::path::Path::new(&worktree_path).exists();
+                    let branch_name = format!("feature/issue-{issue_num}");
+                    let pipeline = compute_pipeline(worktree_exists, &branch_name, &pr, "no-window");
                     states.push(WorkerState {
                         window_index: usize::MAX,
                         window_name: name,
                         status: "no-window".to_string(),
                         pr,
                         last_output: "(orphaned worktree)".to_string(),
+                        worktree_exists,
+                        branch_name,
+                        pipeline,
                     });
                     orphan_count += 1;
                 }
@@ -139,7 +176,7 @@ pub fn scan_worktrees(repo_root: &str) -> Vec<u64> {
     issues
 }
 
-fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus) -> Vec<WorkerState> {
+fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &str) -> Vec<WorkerState> {
     let Ok(out) = std::process::Command::new("/opt/homebrew/bin/tmux")
         .args(["list-windows", "-t", session, "-F", "#{window_index} #{window_name}"])
         .output()
@@ -161,12 +198,30 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus) -> Vec<Worke
         let pr = builder_status.prs.get(name).cloned();
         let status = classify_state(&pane_content, pr.is_some());
 
+        // Derive issue number from window name to locate worktree
+        let issue_num_opt: Option<u64> = name
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .last()
+            .and_then(|s| s.parse().ok());
+        let (worktree_exists, branch_name) = if let Some(n) = issue_num_opt {
+            let wt = format!("{repo_root}/.claude/worktrees/issue-{n}");
+            let br = format!("feature/issue-{n}");
+            (std::path::Path::new(&wt).exists(), br)
+        } else {
+            (false, String::new())
+        };
+        let pipeline = compute_pipeline(worktree_exists, &branch_name, &pr, &status);
+
         states.push(WorkerState {
             window_index: idx,
             window_name: name.to_string(),
             status,
             pr,
             last_output,
+            worktree_exists,
+            branch_name,
+            pipeline,
         });
     }
 
@@ -200,7 +255,12 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
     let spinner_words = ["Crunching", "Brewing", "Baking", "Cogitating", "Thinking", "Analyzing"];
     let is_active = spinner_words.iter().any(|w| pane.contains(w));
 
+    // Claude REPL markers: startup banner or the ">" input prompt with surrounding Claude UI
     let has_bypass = pane.contains("bypass permissions on");
+    // Claude's REPL prompt appears as "> " or "╭─" prefix lines (input area)
+    let has_claude_prompt = pane.contains("> ") && (has_bypass || pane.contains("claude"));
+
+    // Shell prompt detection — last few lines start with shell prompt chars
     let is_shell = pane.lines().rev().take(5).any(|l| {
         let t = l.trim();
         t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
@@ -214,15 +274,19 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
         "posted".to_string()
     } else if is_sleeping {
         "sleeping".to_string()
-    } else if has_bypass && has_pr {
+    } else if (has_bypass || has_claude_prompt) && has_pr {
         "done".to_string()
-    } else if has_bypass {
+    } else if has_bypass || has_claude_prompt {
         "idle".to_string()
     } else if is_shell && has_pr {
         "done".to_string()
     } else if is_shell {
-        let has_claude_trace = pane.contains("claude") || pane.contains("Implement");
-        if has_claude_trace {
+        // Shell visible — Claude exited. If we've seen claude running before, it's "shell" (needs relaunch).
+        // If the window is fresh and never had Claude, it's "queued".
+        let had_claude = pane.contains("claude")
+            || pane.contains("Implement")
+            || pane.contains("feature/issue-");
+        if had_claude {
             "shell".to_string()
         } else {
             "queued".to_string()

@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode, ToastLevel};
+use crate::poller::WorkerState;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -126,7 +127,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_table(f: &mut Frame, app: &App, area: Rect) {
-    let header_cells = ["ISSUE", "STATE", "PR", "LAST OUTPUT"]
+    let header_cells = ["ISSUE", "PIPELINE", "STATE", "LAST OUTPUT"]
         .iter()
         .map(|h| {
             Cell::from(*h)
@@ -150,14 +151,14 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
 
             let marker = if is_selected { "▶" } else { " " };
             let issue_cell = format!("{} {}", marker, w.window_name);
+            let pipeline_cell = w.pipeline.clone();
             let state_cell = status_icon(&w.status);
-            let pr_cell = w.pr.as_deref().unwrap_or("—").to_string();
             let output_cell = w.last_output.clone();
 
             Row::new(vec![
                 Cell::from(issue_cell).style(style),
+                Cell::from(pipeline_cell).style(pipeline_style(w).patch(style)),
                 Cell::from(state_cell).style(status_style(&w.status).patch(style)),
-                Cell::from(pr_cell).style(style),
                 Cell::from(output_cell).style(style),
             ])
         })
@@ -183,7 +184,7 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         [
             Constraint::Length(14),
             Constraint::Length(12),
-            Constraint::Length(8),
+            Constraint::Length(12),
             Constraint::Min(20),
         ],
     )
@@ -287,6 +288,7 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect, scroll: usize) {
     let worker_name = worker.map(|w| w.window_name.as_str()).unwrap_or("—");
     let pr = worker.and_then(|w| w.pr.as_deref()).unwrap_or("—");
     let status = worker.map(|w| w.status.as_str()).unwrap_or("—");
+    let pipeline = worker.map(|w| w.pipeline.as_str()).unwrap_or("—");
 
     let content_height = height.saturating_sub(2) as usize; // subtract borders
     let body_lines = content_height.saturating_sub(1); // leave room for hint
@@ -305,7 +307,7 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect, scroll: usize) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    let title = format!(" {worker_name} │ {status} │ PR: {pr} ");
+    let title = format!(" {worker_name} │ {pipeline} │ {status} │ PR: {pr} ");
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -370,6 +372,18 @@ fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
 
         let para = Paragraph::new(msg).block(block);
         f.render_widget(para, toast_rect);
+    }
+}
+
+fn pipeline_style(w: &WorkerState) -> Style {
+    if w.status == "active" {
+        Style::default().fg(Color::Green)
+    } else if w.pr.is_some() {
+        Style::default().fg(Color::Cyan)
+    } else if w.worktree_exists {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
     }
 }
 

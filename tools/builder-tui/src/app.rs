@@ -301,13 +301,21 @@ impl App {
         if w.window_index == usize::MAX {
             // Orphaned worktree — show git log
             let worktree = format!("{}/.claude/worktrees/{}", self.repo_root, w.window_name);
+            let mut lines = vec![
+                format!("Branch: {}", w.branch_name),
+                format!("Worktree: {worktree}"),
+                format!("Pipeline: {}", w.pipeline),
+                String::new(),
+                "--- git log ---".to_string(),
+            ];
             let out = std::process::Command::new("git")
                 .args(["-C", &worktree, "log", "--oneline", "-20"])
                 .output()
                 .ok()
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_else(|| "(no git log available)\n".to_string());
-            out.lines().map(|l| l.to_string()).collect()
+            lines.extend(out.lines().map(|l| l.to_string()));
+            lines
         } else {
             // Live tmux window — capture last 30 lines
             let target = format!("{}:{}", self.session, w.window_index);
