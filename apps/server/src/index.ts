@@ -123,6 +123,15 @@ app.post('/token', async (req, res) => {
   }
 })
 
+// Warn if invite base URL cannot be derived from environment
+if (!process.env.INVITE_BASE_URL && !process.env.VERCEL_URL) {
+  console.warn(
+    'Warning: INVITE_BASE_URL and VERCEL_URL are not set. ' +
+    'Invite links will fall back to http://localhost:3000. ' +
+    'Set INVITE_BASE_URL (or deploy on Vercel) for correct invite URLs in production.'
+  )
+}
+
 // Export for Vercel serverless
 export default app
 

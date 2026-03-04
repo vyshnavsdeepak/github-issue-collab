@@ -36,6 +36,13 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`
 }
 
+function getInviteBaseUrl(): string {
+  return (
+    process.env.INVITE_BASE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+  )
+}
+
 async function resolveAuth(req: Request): Promise<AuthContext | null> {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) return null
@@ -229,10 +236,10 @@ async function callTool(
         })),
         pending_invites: pendingInvites.map((i) => ({
           code: i.code,
-          invite_url: `${baseUrl}/invite?code=${i.code}`,
+          invite_url: `${getInviteBaseUrl()}/invite?code=${i.code}`,
           created_at: i.created_at,
         })),
-        new_invite_url: `${baseUrl}/invite?code=${newInvite.code}`,
+        new_invite_url: `${getInviteBaseUrl()}/invite?code=${newInvite.code}`,
       }
       return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] }
     }

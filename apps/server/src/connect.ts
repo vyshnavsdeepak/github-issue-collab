@@ -30,6 +30,13 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`
 }
 
+function getInviteBaseUrl(): string {
+  return (
+    process.env.INVITE_BASE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+  )
+}
+
 function timeAgo(dateStr: string | null): string {
   if (!dateStr) return 'never'
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -167,7 +174,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   const inviteRows = invites.length
     ? invites.map(i => {
-        const url = `${baseUrl}/invite?code=${i.code}`
+        const url = `${getInviteBaseUrl()}/invite?code=${i.code}`
         return `
       <tr class="border-t-2 border-black">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
