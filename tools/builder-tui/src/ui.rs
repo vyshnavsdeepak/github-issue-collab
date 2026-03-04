@@ -153,7 +153,11 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
             let issue_cell = format!("{} {}", marker, w.window_name);
             let pipeline_cell = w.pipeline.clone();
             let state_cell = status_icon(&w.status);
-            let output_cell = w.last_output.clone();
+            let output_cell = match &w.probe {
+                Some(p) if p == "running" => "🔍 probing…".to_string(),
+                Some(p) => format!("🔍 {p}"),
+                None => w.last_output.clone(),
+            };
 
             Row::new(vec![
                 Cell::from(issue_cell).style(style),

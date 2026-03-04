@@ -13,7 +13,7 @@ pub struct BuilderStatus {
 pub struct WorkerState {
     pub window_index: usize,
     pub window_name: String,
-    /// Pane/Claude state: "active" | "idle" | "shell" | "done" | "queued" | "sleeping" | "posted" | "no-window"
+    /// Pane/Claude state: "active" | "idle" | "shell" | "done" | "queued" | "sleeping" | "posted" | "no-window" | "probing"
     pub status: String,
     pub pr: Option<String>,
     pub last_output: String,
@@ -23,27 +23,29 @@ pub struct WorkerState {
     pub branch_name: String,
     /// Richer pipeline status for at-a-glance: WT→BR→PR
     pub pipeline: String,
+    /// Last result from a --print probe in the bottom split pane
+    pub probe: Option<String>,
 }
 
 fn compute_pipeline(worktree_exists: bool, branch_name: &str, pr: &Option<String>, status: &str) -> String {
     let wt = if worktree_exists { "🌳" } else { "·" };
-    // Check if branch exists via git
     let br = if worktree_exists { "🌿" } else { "·" };
     let pr_part = match pr {
         Some(p) => p.clone(),
         None => "·".to_string(),
     };
     let state = match status {
-        "active" => "⚡",
-        "idle" => "⏸",
-        "shell" => "🐚",
-        "done" => "✅",
-        "queued" => "⏳",
+        "active"   => "⚡",
+        "idle"     => "⏸",
+        "shell"    => "🐚",
+        "done"     => "✅",
+        "queued"   => "⏳",
         "sleeping" => "💤",
-        "posted" => "📮",
-        "no-window" => "👻",
+        "posted"   => "📮",
+        "no-window"=> "👻",
         "conflict" => "⚠️",
-        _ => "?",
+        "probing"  => "🔍",
+        _          => "?",
     };
     let _ = branch_name;
     format!("{wt}{br}{pr_part} {state}")
@@ -97,6 +99,7 @@ pub async fn run(
                         worktree_exists,
                         branch_name,
                         pipeline,
+                        probe: None,
                     });
                     orphan_count += 1;
                 }
@@ -212,6 +215,10 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
         } else {
             (false, String::new())
         };
+
+        // Check bottom split pane (index 1) for probe activity / results
+        let (probe, status) = read_probe(session, name, status, issue_num_opt);
+
         // Conflict marker overrides status
         let status = match issue_num_opt {
             Some(n) if crate::monitor::has_conflict_marker(n) => "conflict".to_string(),
@@ -228,10 +235,55 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
             worktree_exists,
             branch_name,
             pipeline,
+            probe,
         });
     }
 
     states
+}
+
+/// Check pane 1 (bottom split) of a window for probe activity or finished JSON.
+/// Returns (probe_label, possibly_overridden_status).
+fn read_probe(session: &str, window_name: &str, status: String, issue_num: Option<u64>) -> (Option<String>, String) {
+    // Check whether pane 1 exists
+    let panes_out = std::process::Command::new("/opt/homebrew/bin/tmux")
+        .args(["list-panes", "-t", &format!("{session}:{window_name}"), "-F", "#{pane_index}"])
+        .output()
+        .ok();
+    let has_bottom = panes_out
+        .as_ref()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "1"))
+        .unwrap_or(false);
+
+    if !has_bottom {
+        return (None, status);
+    }
+
+    // Capture bottom pane content
+    let target = format!("{session}:{window_name}.1");
+    let content = std::process::Command::new("/opt/homebrew/bin/tmux")
+        .args(["capture-pane", "-t", &target, "-p"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // Is the probe still running? (no shell prompt at the bottom yet)
+    let finished = content.lines().rev().take(3).any(|l| {
+        let t = l.trim();
+        t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
+    });
+
+    if !finished {
+        // Probe actively running — override status to "probing"
+        return (Some("running".to_string()), "probing".to_string());
+    }
+
+    // Probe finished — try to parse JSON from output
+    let json_action = crate::monitor::parse_print_json(&content)
+        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(|s| s.to_string()));
+
+    let _ = issue_num; // available for future use
+    (json_action.clone(), status)
 }
 
 fn capture_pane(session: &str, window_index: usize) -> String {

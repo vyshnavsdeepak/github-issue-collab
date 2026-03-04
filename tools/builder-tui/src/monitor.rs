@@ -78,6 +78,110 @@ async fn send_keys(config: &Config, target: &str, text: &str) {
         .await;
 }
 
+/// Spawn a non-interactive `claude --print` in a split pane (bottom 35%) of the given
+/// window. The top pane (interactive Claude or shell) is left untouched.
+/// The prompt is written to a temp script so quoting is never a problem.
+async fn send_print_pane(
+    config: &Config,
+    window_name: &str,
+    worktree: &str,
+    prompt: &str,
+    log_tx: &mpsc::UnboundedSender<String>,
+) {
+    let win_target = format!("{}:{}", config.session, window_name);
+
+    // Kill any existing bottom pane from a previous probe
+    let _ = tokio::process::Command::new(&config.tmux)
+        .args(["kill-pane", "-t", &format!("{win_target}.1")])
+        .output()
+        .await;
+
+    // Create bottom split (35% height), don't steal focus from top pane
+    let ok = tokio::process::Command::new(&config.tmux)
+        .args(["split-window", "-t", &win_target, "-v", "-p", "35", "-d"])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !ok {
+        log(log_tx, format!("[print] Could not split pane for {window_name}"));
+        return;
+    }
+
+    // Write a self-contained script so we never worry about shell quoting
+    let script_path = format!("/tmp/monitor-{window_name}.sh");
+    let script = format!(
+        "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nclaude --dangerously-skip-permissions --print '{}'\n",
+        worktree,
+        prompt.replace('\'', r"'\''"),
+    );
+    if std::fs::write(&script_path, &script).is_ok() {
+        let _ = std::fs::set_permissions(
+            &script_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+
+    let bottom = format!("{win_target}.1");
+    let _ = tokio::process::Command::new(&config.tmux)
+        .args(["send-keys", "-t", &bottom, &script_path, "Enter"])
+        .output()
+        .await;
+
+    log(log_tx, format!("[print] Spawned --print Claude in {window_name} bottom pane"));
+}
+
+/// Capture the bottom split pane of a window (pane index 1).
+/// Returns empty string if no bottom pane exists.
+async fn capture_bottom_pane(config: &Config, window_name: &str) -> String {
+    let target = format!("{}:{}.1", config.session, window_name);
+    let Ok(out) = tokio::process::Command::new(&config.tmux)
+        .args(["capture-pane", "-t", &target, "-p"])
+        .output()
+        .await
+    else {
+        return String::new();
+    };
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// Check if the bottom pane of a window is still running (probe in progress).
+pub async fn bottom_pane_active(config: &Config, window_name: &str) -> bool {
+    let target = format!("{}:{}.1", config.session, window_name);
+    // list-panes returns one line per pane; if pane 1 exists it will appear
+    let Ok(out) = tokio::process::Command::new(&config.tmux)
+        .args(["list-panes", "-t", &format!("{}:{}", config.session, window_name), "-F", "#{pane_index}:#{pane_pid}"])
+        .output()
+        .await
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // If pane 1 exists, a probe may be running; check if its content still shows claude
+    if text.lines().any(|l| l.starts_with("1:")) {
+        let content = capture_bottom_pane(config, window_name).await;
+        // Still running if no shell prompt at the end yet
+        let finished = content.lines().rev().take(3).any(|l| {
+            let t = l.trim();
+            t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
+        });
+        !finished
+    } else {
+        let _ = target; // suppress unused warning
+        false
+    }
+}
+
+/// Parse the last JSON object from a block of text (used to read --print output).
+pub fn parse_print_json(output: &str) -> Option<serde_json::Value> {
+    output
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .next()
+}
+
 pub async fn list_windows(config: &Config) -> Vec<(usize, String)> {
     let Ok(out) = tokio::process::Command::new(&config.tmux)
         .args([
@@ -229,28 +333,42 @@ pub async fn monitor_windows(
         let pr_exists = !pr_nums.is_empty();
         let target = format!("{}:{}", config.session, idx);
 
-        if state == "claude_repl" && !pr_exists {
-            log(
-                log_tx,
-                format!("[monitor] Issue #{issue_num}: Claude idle, no PR — nudging"),
-            );
-            toast(log_tx, "INFO", &format!("Nudged #{issue_num}"));
-            let msg = format!("No PR yet for #{issue_num}. Commit, push, and open a PR: git push origin HEAD && gh pr create --base main --body 'Closes #{issue_num}'");
-            send_keys(config, &target, &msg).await;
+        let worktree_path = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
 
-            let comment = format!(
-                "🔧 **Vyshnav (Builder):** Nudged Claude on issue #{issue_num} — was idle without a PR.\n\n**— Vyshnav (simulated builder)**"
+        // Skip if bottom pane already has an active probe
+        if bottom_pane_active(config, name).await {
+            continue;
+        }
+
+        if state == "claude_repl" && !pr_exists {
+            log(log_tx, format!("[monitor] Issue #{issue_num}: idle, no PR — spawning --print probe"));
+            toast(log_tx, "INFO", &format!("Probing #{issue_num}"));
+            let prompt = format!(
+                "Issue #{issue_num} has no PR yet. Check git status in this worktree. \
+                Commit any uncommitted work, push the branch, and create a PR: \
+                gh pr create --base main --body 'Closes #{issue_num}'. \
+                At the end output exactly one JSON line: \
+                {{\"issue\":{issue_num},\"action\":\"pr_created\",\"pr\":PR_NUMBER}} \
+                or {{\"issue\":{issue_num},\"action\":\"nothing\",\"reason\":\"...\"}}"
             );
-            let _ = github::post_comment(&config.repo, config.discussion_issue, &comment).await;
+            send_print_pane(config, name, &worktree_path, &prompt, log_tx).await;
+            let _ = github::post_comment(
+                &config.repo,
+                config.discussion_issue,
+                &format!("🔧 **Builder:** Probing issue #{issue_num} — idle with no PR."),
+            )
+            .await;
         } else if state == "claude_repl" && pr_exists {
-            // Claude is idle and PR is already open — nudge to check for review comments
             let pr = pr_nums.first().copied().unwrap_or(0);
-            log(
-                log_tx,
-                format!("[monitor] Issue #{issue_num}: Claude idle, PR #{pr} open — checking for review"),
+            log(log_tx, format!("[monitor] Issue #{issue_num}: idle, PR #{pr} — probing review status"));
+            let prompt = format!(
+                "PR #{pr} is open for issue #{issue_num}. Check its status: \
+                gh pr view {pr} --json mergeStateStatus,reviews,statusCheckRollup. \
+                If there are review comments, address them. If CI is failing, fix the failures. \
+                If everything is clean output: {{\"issue\":{issue_num},\"pr\":{pr},\"status\":\"clean\"}} \
+                or {{\"issue\":{issue_num},\"pr\":{pr},\"status\":\"needs_work\",\"reason\":\"...\"}}"
             );
-            let msg = format!("PR #{pr} open for #{issue_num}. Check reviews: gh pr view {pr} --comments — address any feedback or wait for CI.");
-            send_keys(config, &target, &msg).await;
+            send_print_pane(config, name, &worktree_path, &prompt, log_tx).await;
         } else if state == "shell" && !pr_exists {
             let active = count_active_workers(config).await;
             if active >= config.max_concurrent {
@@ -421,34 +539,35 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
         let state = classify_pane(&pane);
         let target = format!("{}:{}", config.session, idx);
 
+        // Skip if probe already running
+        if bottom_pane_active(config, name).await {
+            continue;
+        }
+
         if !clean {
-            // Conflict — tell Claude (or shell) specifically what to fix
             log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT rebasing onto main"));
             toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
 
             let conflict_prompt = format!(
-                "Branch conflicts with main. Fix: git fetch origin && git rebase origin/main — resolve each conflict, git add, git rebase --continue, then git push --force-with-lease origin HEAD"
+                "Your branch feature/issue-{issue_num} has merge conflicts with main. \
+                Resolve them: git fetch origin && git rebase origin/main — \
+                for each conflicted file fix conflict markers, git add <file>, git rebase --continue. \
+                Then push: git push --force-with-lease origin HEAD. \
+                Output JSON when done: {{\"issue\":{issue_num},\"action\":\"conflict_resolved\"}} \
+                or {{\"issue\":{issue_num},\"action\":\"conflict_failed\",\"reason\":\"...\"}}"
             );
 
-            if state == "claude_repl" {
-                send_keys(config, &target, &conflict_prompt).await;
-            } else if state == "shell" {
-                // Relaunch Claude specifically to fix conflicts
-                let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
-                let script = format!(
-                    "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
-                    worktree,
-                    conflict_prompt.replace('\'', "'\\''")
-                );
-                if std::fs::write(&script_path, &script).is_ok() {
-                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-                    send_keys(config, &target, &script_path).await;
-                }
-            }
+            // Always use split-pane --print: works whether top is REPL or shell
+            send_print_pane(config, name, &worktree, &conflict_prompt, log_tx).await;
         } else if state == "claude_repl" {
-            // test_rebase already applied the rebase — tell Claude to push
-            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — asking Claude to push"));
-            send_keys(config, &target, "PRs merged to main. Branch rebased — please run: git push --force-with-lease origin HEAD").await;
+            // test_rebase applied cleanly — push via split pane
+            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — pushing via split pane"));
+            let push_prompt = format!(
+                "PRs merged to main. Branch feature/issue-{issue_num} has been rebased. \
+                Run: git push --force-with-lease origin HEAD. \
+                Output JSON: {{\"issue\":{issue_num},\"action\":\"pushed\"}}"
+            );
+            send_print_pane(config, name, &worktree, &push_prompt, log_tx).await;
         } else if state == "shell" {
             if !std::path::Path::new(&worktree).exists() {
                 continue;
