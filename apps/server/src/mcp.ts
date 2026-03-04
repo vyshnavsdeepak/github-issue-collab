@@ -37,10 +37,17 @@ function getBaseUrl(req: Request): string {
 }
 
 function getInviteBaseUrl(): string {
-  return (
-    process.env.INVITE_BASE_URL ??
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+  if (process.env.INVITE_BASE_URL) return process.env.INVITE_BASE_URL
+  if (process.env.COLLAB_URL) return process.env.COLLAB_URL
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+
+  const port = process.env.PORT ?? '3000'
+  const fallback = `http://localhost:${port}`
+  console.warn(
+    `[warn] VERCEL_URL is not set — invite URLs will use ${fallback}. ` +
+      `Set INVITE_BASE_URL or COLLAB_URL to override.`
   )
+  return fallback
 }
 
 async function resolveAuth(req: Request): Promise<AuthContext | null> {
