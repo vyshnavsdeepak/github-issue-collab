@@ -121,6 +121,63 @@ cleanup_finished_windows() {
   done <<< "$windows"
 }
 
+REBASE_CHECK_FILE="/tmp/builder-last-merge-check.txt"
+
+notify_workers_to_rebase() {
+  # Get timestamp of last check (default: 10 minutes ago)
+  local last_check
+  if [ -f "$REBASE_CHECK_FILE" ]; then
+    last_check=$(cat "$REBASE_CHECK_FILE")
+  else
+    last_check=$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u --date="10 minutes ago" +%Y-%m-%dT%H:%M:%SZ)
+  fi
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$REBASE_CHECK_FILE"
+
+  # Check for PRs merged since last check
+  local merged_prs
+  merged_prs=$(gh pr list --repo "$REPO" --state merged --json number,title,mergedAt \
+    -q ".[] | select(.mergedAt > \"$last_check\") | \"#\(.number) \(.title)\"" 2>/dev/null)
+  [ -z "$merged_prs" ] && return
+
+  echo "[rebase] Detected merged PRs since $last_check:"
+  echo "$merged_prs"
+
+  # Pull latest main into REPO_ROOT
+  git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null
+
+  local session="github-builder"
+  local windows
+  windows=$(/opt/homebrew/bin/tmux list-windows -t "$session" -F "#{window_index}:#{window_name}" 2>/dev/null)
+  [ -z "$windows" ] && return
+
+  while IFS=: read -r idx name; do
+    [[ "$name" == "zsh" ]] && continue
+    local issue_num
+    issue_num=$(echo "$name" | grep -o '[0-9]*$')
+    [ -z "$issue_num" ] && continue
+
+    local pane_text
+    pane_text=$(/opt/homebrew/bin/tmux capture-pane -t "$session:$idx" -p 2>/dev/null | tail -10)
+
+    if echo "$pane_text" | grep -q "bypass permissions on"; then
+      # Claude is at REPL — ask it to rebase
+      echo "[rebase] Asking issue #$issue_num worker to rebase on latest main"
+      /opt/homebrew/bin/tmux send-keys -t "$session:$idx" \
+        "Some PRs just merged to main. Please run: git fetch origin && git rebase origin/main — then continue your work." Enter
+      sleep 1
+    elif echo "$pane_text" | grep -qE "^(vyshnav@|>>)"; then
+      # At shell — do the rebase directly
+      local worktree="$REPO_ROOT/.claude/worktrees/issue-$issue_num"
+      [ ! -d "$worktree" ] && continue
+      echo "[rebase] Running rebase for issue #$issue_num at shell"
+      /opt/homebrew/bin/tmux send-keys -t "$session:$idx" \
+        "cd '$worktree' && git fetch origin && git rebase origin/main && echo '[rebase done]'" Enter
+      sleep 1
+    fi
+    # skip active (spinner) windows — Claude will handle it when it pauses
+  done <<< "$windows"
+}
+
 resume_after_backoff() {
   [ -f "$RL_FLAG" ] && return
   [ ! -f "/tmp/rl-resumed.txt" ] && return
@@ -264,6 +321,9 @@ Instructions:
 
   echo "[builder] Monitoring github-builder windows..."
   monitor_builder_windows
+
+  echo "[builder] Checking for merged PRs and notifying workers to rebase..."
+  notify_workers_to_rebase
 
   echo "[builder] Cleaning up finished windows..."
   cleanup_finished_windows
