@@ -37,6 +37,9 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await db`
+    ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE
+  `
 }
 
 export interface User {
@@ -61,6 +64,7 @@ export interface InviteCode {
   code: string
   user_id: string
   used: boolean
+  is_demo: boolean
   created_at: string
 }
 
@@ -146,11 +150,11 @@ export async function listSessionsForUser(userId: string): Promise<DesignerSessi
   return rows as DesignerSession[]
 }
 
-export async function createInviteCode(userId: string): Promise<InviteCode> {
+export async function createInviteCode(userId: string, isDemo = false): Promise<InviteCode> {
   const db = sql()
   const code = randomUUID()
   const rows = await db`
-    INSERT INTO invite_codes (code, user_id) VALUES (${code}, ${userId}) RETURNING *
+    INSERT INTO invite_codes (code, user_id, is_demo) VALUES (${code}, ${userId}, ${isDemo}) RETURNING *
   `
   return rows[0] as InviteCode
 }

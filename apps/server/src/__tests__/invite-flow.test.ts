@@ -39,9 +39,9 @@ vi.mock('../db.js', () => ({
 
   getInviteCode: (code: string) => Promise.resolve(inviteCodes.get(code) ?? null),
 
-  createInviteCode: (userId: string) => {
+  createInviteCode: (userId: string, isDemo = false) => {
     const code = newId()
-    const invite = { code, user_id: userId, used: false, created_at: new Date().toISOString() }
+    const invite = { code, user_id: userId, used: false, is_demo: isDemo, created_at: new Date().toISOString() }
     inviteCodes.set(code, invite)
     return Promise.resolve(invite)
   },
@@ -70,6 +70,8 @@ vi.mock('../db.js', () => ({
   listSessionsForUser: () => Promise.resolve([]),
   listPendingInvitesForUser: () => Promise.resolve([]),
   runMigrations: () => Promise.resolve(),
+  countInviteCodes: () => Promise.resolve(inviteCodes.size),
+  getFirstUser: () => Promise.resolve([...users.values()][0] ?? null),
   createUser: (params: { installationId: string; githubUser: string; repo?: string }) => {
     const user = {
       id: newId(),
@@ -161,13 +163,15 @@ describe('Designer invite flow', () => {
     expect(res.text).toContain('testdev/testrepo')
   })
 
-  it('step 3 — POST /invite/callback creates a designer session in the DB', async () => {
+  it('step 3 — POST /invite/callback creates a designer session and redirects to /designer', async () => {
     const res = await supertest(app)
       .post('/invite/callback')
       .type('form')
       .send({ code: inviteCode, name: 'alice' })
 
-    expect(res.status).toBe(200)
+    // Callback now redirects to /designer after creating the session
+    expect(res.status).toBe(302)
+    expect(res.headers['location']).toBe('/designer')
 
     // The invite should now be marked used
     const invite = inviteCodes.get(inviteCode)
@@ -180,9 +184,9 @@ describe('Designer invite flow', () => {
     expect(typeof session!['token']).toBe('string')
   })
 
-  it('step 4 — POST /invite/callback response contains valid MCP config JSON', async () => {
+  it('step 4 — POST /invite/callback sets a designer_session cookie', async () => {
     // Use a fresh invite code for this assertion
-    const freshInvite = { code: newId(), user_id: testUserId, used: false, created_at: new Date().toISOString() }
+    const freshInvite = { code: newId(), user_id: testUserId, used: false, is_demo: false, created_at: new Date().toISOString() }
     inviteCodes.set(freshInvite.code, freshInvite)
 
     const res = await supertest(app)
@@ -190,36 +194,11 @@ describe('Designer invite flow', () => {
       .type('form')
       .send({ code: freshInvite.code, name: 'bob' })
 
-    expect(res.status).toBe(200)
-    expect(res.headers['content-type']).toMatch(/html/)
+    expect(res.status).toBe(302)
 
-    // Extract the JSON from the <pre id="mcp-config"> element
-    const match = res.text.match(/<pre[^>]*id="mcp-config"[^>]*>([\s\S]*?)<\/pre>/)
-    expect(match).not.toBeNull()
-
-    // The HTML template HTML-escapes < and > in the config; unescape before parsing
-    const rawJson = match![1]
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"')
-      .trim()
-
-    let mcpConfig: unknown
-    expect(() => {
-      mcpConfig = JSON.parse(rawJson)
-    }).not.toThrow()
-
-    const cfg = mcpConfig as Record<string, unknown>
-    expect(cfg).toHaveProperty('mcpServers')
-
-    const servers = cfg['mcpServers'] as Record<string, unknown>
-    const server = servers['github-collab'] as Record<string, unknown>
-    expect(server).toBeDefined()
-    expect(typeof server['url']).toBe('string')
-    expect((server['url'] as string)).toContain('/mcp')
-
-    const headers = server['headers'] as Record<string, string>
-    expect(headers['Authorization']).toMatch(/^Bearer .+/)
+    // A Set-Cookie header with designer_session must be present
+    const setCookie = res.headers['set-cookie'] as string[] | string | undefined
+    const cookieStr = Array.isArray(setCookie) ? setCookie.join('; ') : (setCookie ?? '')
+    expect(cookieStr).toMatch(/designer_session=/)
   })
 })

@@ -153,7 +153,7 @@ async function seedDemoInviteIfNeeded(): Promise<void> {
       console.log('[demo] Invites table is empty but no users found — complete the /connect flow first.')
       return
     }
-    const invite = await createInviteCode(user.id)
+    const invite = await createInviteCode(user.id, true)
     const baseUrl =
       process.env.INVITE_BASE_URL ??
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${process.env.PORT ?? 3000}`)
