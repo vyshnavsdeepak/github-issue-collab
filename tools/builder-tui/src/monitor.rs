@@ -459,20 +459,22 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
                 }
             }
         } else if state == "claude_repl" {
-            log(log_tx, format!("[rebase] Asking issue #{issue_num} worker to rebase (clean)"));
+            // test_rebase already applied the rebase — tell Claude to push
+            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — asking Claude to push"));
             send_keys(
                 config,
                 &target,
-                "Some PRs just merged to main. Please run: git fetch origin && git rebase origin/main — your branch rebases cleanly, just needs the update.",
+                "Some PRs just merged to main. Your branch has been rebased onto main automatically. Please run: git push --force-with-lease origin HEAD to update your PR.",
             )
             .await;
         } else if state == "shell" {
             if !std::path::Path::new(&worktree).exists() {
                 continue;
             }
-            log(log_tx, format!("[rebase] Running rebase for issue #{issue_num} at shell (clean)"));
+            // test_rebase already applied the rebase — just push from the shell
+            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — pushing from shell"));
             let cmd = format!(
-                "cd '{}' && git fetch origin && git rebase origin/main && echo '[rebase done]'",
+                "cd '{}' && git push --force-with-lease origin HEAD && echo '[rebase+push done]'",
                 worktree
             );
             send_keys(config, &target, &cmd).await;
