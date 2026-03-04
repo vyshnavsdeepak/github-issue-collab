@@ -1,7 +1,12 @@
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::poller::WorkerState;
+
+const LOG_CAP: usize = 200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -17,12 +22,20 @@ pub struct App {
     pub mode: Mode,
     pub input: String,
     pub status_msg: String,
-    pub last_refresh: std::time::Instant,
+    pub last_refresh: Instant,
+    pub logs: VecDeque<String>,
+    pub show_logs: bool,
+    pub next_scan_at: Option<Instant>,
     rx: watch::Receiver<Vec<WorkerState>>,
+    log_rx: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl App {
-    pub fn new(session: String, rx: watch::Receiver<Vec<WorkerState>>) -> Self {
+    pub fn new(
+        session: String,
+        rx: watch::Receiver<Vec<WorkerState>>,
+        log_rx: Option<mpsc::UnboundedReceiver<String>>,
+    ) -> Self {
         Self {
             session,
             workers: Vec::new(),
@@ -30,21 +43,42 @@ impl App {
             mode: Mode::Normal,
             input: String::new(),
             status_msg: String::new(),
-            last_refresh: std::time::Instant::now(),
+            last_refresh: Instant::now(),
+            logs: VecDeque::with_capacity(LOG_CAP),
+            show_logs: false,
+            next_scan_at: None,
             rx,
+            log_rx,
         }
     }
 
     pub fn tick(&mut self) {
-        // Check if poller has new state
+        // Pick up latest worker state from poller
         if self.rx.has_changed().unwrap_or(false) {
             let new_workers = self.rx.borrow_and_update().clone();
             self.workers = new_workers;
-            self.last_refresh = std::time::Instant::now();
+            self.last_refresh = Instant::now();
 
-            // Clamp selection
             if !self.workers.is_empty() && self.selected >= self.workers.len() {
                 self.selected = self.workers.len() - 1;
+            }
+        }
+
+        // Drain builder log channel
+        if let Some(rx) = &mut self.log_rx {
+            while let Ok(msg) = rx.try_recv() {
+                if let Some(rest) = msg.strip_prefix("__NEXT_SCAN_") {
+                    if let Some(secs_str) = rest.strip_suffix("__") {
+                        if let Ok(secs) = secs_str.parse::<u64>() {
+                            self.next_scan_at = Some(Instant::now() + Duration::from_secs(secs));
+                        }
+                    }
+                } else {
+                    if self.logs.len() >= LOG_CAP {
+                        self.logs.pop_front();
+                    }
+                    self.logs.push_back(msg);
+                }
             }
         }
     }
@@ -66,17 +100,22 @@ impl App {
                 if !self.workers.is_empty() {
                     self.mode = Mode::Send;
                     self.input.clear();
-                    self.status_msg = "Send prompt to selected worker (Enter to send, Esc to cancel)".into();
+                    self.status_msg =
+                        "Send prompt to selected worker (Enter to send, Esc to cancel)".into();
                 }
             }
             KeyCode::Char('i') => self.interrupt_selected(),
             KeyCode::Char('b') => {
                 self.mode = Mode::Broadcast;
                 self.input.clear();
-                self.status_msg = "Broadcast to all idle workers (Enter to send, Esc to cancel)".into();
+                self.status_msg =
+                    "Broadcast to all idle workers (Enter to send, Esc to cancel)".into();
             }
             KeyCode::Char('r') => {
                 self.status_msg = "Refreshing…".into();
+            }
+            KeyCode::Char('l') => {
+                self.show_logs = !self.show_logs;
             }
             _ => {}
         }
@@ -193,7 +232,8 @@ impl App {
         }
     }
 
-    // Helpers for UI
+    // ─── Helpers for UI ───────────────────────────────────────────────────────
+
     pub fn active_count(&self) -> usize {
         self.workers.iter().filter(|w| w.status == "active").count()
     }
@@ -202,8 +242,18 @@ impl App {
         self.workers.iter().filter(|w| w.status == "idle").count()
     }
 
+    pub fn queued_count(&self) -> usize {
+        self.workers.iter().filter(|w| w.status == "queued").count()
+    }
+
     pub fn last_refresh_secs(&self) -> u64 {
         self.last_refresh.elapsed().as_secs()
+    }
+
+    pub fn next_scan_remaining_secs(&self) -> Option<u64> {
+        self.next_scan_at.map(|at| {
+            at.saturating_duration_since(Instant::now()).as_secs()
+        })
     }
 
     pub fn backoff_status(&self) -> String {
@@ -216,7 +266,7 @@ impl App {
                 .as_secs() as i64;
             let remaining = ts - now;
             if remaining > 0 {
-                return format!("{}s remaining", remaining);
+                return format!("{remaining}s remaining");
             }
         }
         "none".to_string()

@@ -181,11 +181,6 @@ if (!process.env.INVITE_BASE_URL && !process.env.VERCEL_URL) {
   )
 }
 
-const baseUrl =
-  process.env.INVITE_BASE_URL ??
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${process.env.PORT ?? 3000}`)
-console.log(`GitHub App callback URL: ${baseUrl}/dashboard/callback — configure this in GitHub App settings if you changed domains`)
-
 // Export for Vercel serverless
 export default app
 

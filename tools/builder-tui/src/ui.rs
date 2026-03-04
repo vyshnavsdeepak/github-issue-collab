@@ -14,14 +14,25 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(5),    // Table
+            Constraint::Length(4), // Header (2 content lines + 2 borders)
+            Constraint::Min(5),    // Content (table + optional log)
             Constraint::Length(3), // Footer / input
         ])
         .split(area);
 
     draw_header(f, app, chunks[0]);
-    draw_table(f, app, chunks[1]);
+
+    if app.show_logs {
+        let content = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(chunks[1]);
+        draw_table(f, app, content[0]);
+        draw_logs(f, app, content[1]);
+    } else {
+        draw_table(f, app, chunks[1]);
+    }
+
     draw_footer(f, app, chunks[2]);
 }
 
@@ -34,6 +45,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         } else {
             format!("{}m ago", secs / 60)
         }
+    };
+    let next_scan = match app.next_scan_remaining_secs() {
+        Some(s) if s > 0 => format!("{s}s"),
+        Some(_) => "now".to_string(),
+        None => "—".to_string(),
     };
 
     let text = vec![
@@ -57,11 +73,21 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 format!("Idle: {} ", app.idle_count()),
                 Style::default().fg(Color::Yellow),
             ),
+            Span::raw("│ "),
+            Span::styled(
+                format!("Queued: {} ", app.queued_count()),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::from(vec![
             Span::raw(format!(" Backoff: {backoff}")),
             Span::raw("   "),
             Span::raw(format!("Last scan: {refresh_ago}")),
+            Span::raw("   "),
+            Span::styled(
+                format!("Next scan: {next_scan}"),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
     ];
 
@@ -77,7 +103,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     let header_cells = ["ISSUE", "STATE", "PR", "LAST OUTPUT"]
         .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        .map(|h| {
+            Cell::from(*h)
+                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        });
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
     let rows: Vec<Row> = app
@@ -109,8 +138,7 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    // Compute visible window for scroll
-    let visible_height = area.height.saturating_sub(3) as usize; // borders + header
+    let visible_height = area.height.saturating_sub(3) as usize;
     let scroll_offset = compute_scroll(app.selected, app.workers.len(), visible_height);
 
     let visible_rows: Vec<Row> = rows
@@ -120,10 +148,7 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let scroll_hint = if app.workers.len() > visible_height {
-        format!(
-            " {} rows (j/k or scroll)",
-            app.workers.len()
-        )
+        format!(" {} rows (j/k or scroll)", app.workers.len())
     } else {
         String::new()
     };
@@ -150,10 +175,31 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
+fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
+    let visible_lines = area.height.saturating_sub(2) as usize;
+    let total = app.logs.len();
+    let skip = total.saturating_sub(visible_lines);
+
+    let lines: Vec<Line> = app
+        .logs
+        .iter()
+        .skip(skip)
+        .map(|l| Line::from(Span::raw(l.as_str())))
+        .collect();
+
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Builder Log ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Blue)),
+    );
+    f.render_widget(para, area);
+}
+
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let (title, content) = match &app.mode {
         Mode::Normal => {
-            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [q] Quit";
+            let hint = " [s] Send  [i] Interrupt  [b] Broadcast  [r] Refresh  [l] Log  [q] Quit";
             let msg = if app.status_msg.is_empty() {
                 hint.to_string()
             } else {
@@ -193,6 +239,9 @@ fn status_icon(status: &str) -> String {
         "idle" => "🟡 idle".to_string(),
         "shell" => "🔴 shell".to_string(),
         "done" => "✅ done".to_string(),
+        "queued" => "⏳ queued".to_string(),
+        "sleeping" => "💤 sleeping".to_string(),
+        "posted" => "✅ posted".to_string(),
         _ => "❓ unknown".to_string(),
     }
 }
@@ -203,6 +252,9 @@ fn status_style(status: &str) -> Style {
         "idle" => Style::default().fg(Color::Yellow),
         "shell" => Style::default().fg(Color::Red),
         "done" => Style::default().fg(Color::Gray),
+        "queued" => Style::default().fg(Color::DarkGray),
+        "sleeping" => Style::default().fg(Color::Blue),
+        "posted" => Style::default().fg(Color::Cyan),
         _ => Style::default(),
     }
 }
