@@ -36,6 +36,30 @@ is_rate_limited() {
   return 1
 }
 
+write_builder_status() {
+  local session="github-builder"
+  local windows
+  windows=$(/opt/homebrew/bin/tmux list-windows -t "$session" -F "#{window_index}:#{window_name}" 2>/dev/null)
+  local json='{"prs":{'
+  local first=1
+  while IFS=: read -r idx name; do
+    [[ "$name" == "zsh" ]] && continue
+    local issue_num
+    issue_num=$(echo "$name" | grep -o '[0-9]*$')
+    [ -z "$issue_num" ] && continue
+    local pr_num
+    pr_num=$(gh pr list --repo "$REPO" --state all --json number,body \
+      -q ".[] | select(.body | test(\"#${issue_num}\")) | .number" 2>/dev/null | head -1)
+    if [ -n "$pr_num" ]; then
+      [ "$first" -eq 0 ] && json="$json,"
+      json="$json\"$name\":\"#$pr_num\""
+      first=0
+    fi
+  done <<< "$windows"
+  json="$json}}"
+  echo "$json" > /tmp/builder-status.json
+}
+
 monitor_builder_windows() {
   local session="github-builder"
   local windows
@@ -318,6 +342,9 @@ Instructions:
     CREATED=$((CREATED + 1))
     break  # only create 1 issue per scan
   done <<< "$TASKS"
+
+  echo "[builder] Writing builder status for TUI..."
+  write_builder_status
 
   echo "[builder] Monitoring github-builder windows..."
   monitor_builder_windows
