@@ -125,7 +125,7 @@ function getToolSchemas(role: Role) {
     },
     {
       name: 'get_collaboration_info',
-      description: 'Get active designer sessions, pending invite codes, and a fresh invite link',
+      description: 'Get active designer sessions and pending invite codes',
       inputSchema: { type: 'object', properties: {} },
     },
   ]
@@ -143,6 +143,11 @@ function getToolSchemas(role: Role) {
         },
         required: ['issue_number', 'label', 'action'],
       },
+    })
+    tools.push({
+      name: 'create_invite',
+      description: 'Create a new designer invite link (developer only)',
+      inputSchema: { type: 'object', properties: {} },
     })
   }
 
@@ -221,10 +226,9 @@ async function callTool(
     }
 
     case 'get_collaboration_info': {
-      const [sessions, pendingInvites, newInvite] = await Promise.all([
+      const [sessions, pendingInvites] = await Promise.all([
         db.listSessionsForUser(ctx.userId),
         db.listPendingInvitesForUser(ctx.userId),
-        db.createInviteCode(ctx.userId),
       ])
       const info = {
         hosted_mcp_url: `${baseUrl}/mcp`,
@@ -239,9 +243,17 @@ async function callTool(
           invite_url: `${getInviteBaseUrl()}/invite?code=${i.code}`,
           created_at: i.created_at,
         })),
-        new_invite_url: `${getInviteBaseUrl()}/invite?code=${newInvite.code}`,
       }
       return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] }
+    }
+
+    case 'create_invite': {
+      if (ctx.role !== 'developer') {
+        throw new Error('create_invite is only available to developers')
+      }
+      const invite = await db.createInviteCode(ctx.userId)
+      const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
+      return { content: [{ type: 'text', text: JSON.stringify({ invite_url: inviteUrl, code: invite.code }, null, 2) }] }
     }
 
     case 'label_issue': {
