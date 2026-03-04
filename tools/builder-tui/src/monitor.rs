@@ -54,6 +54,10 @@ fn log(tx: &mpsc::UnboundedSender<String>, msg: impl Into<String>) {
     let _ = tx.send(msg.into());
 }
 
+fn toast(tx: &mpsc::UnboundedSender<String>, level: &str, msg: &str) {
+    let _ = tx.send(format!("__TOAST_{level}_{msg}__"));
+}
+
 async fn capture_pane(config: &Config, idx: usize) -> String {
     let target = format!("{}:{}", config.session, idx);
     let Ok(out) = tokio::process::Command::new(&config.tmux)
@@ -229,6 +233,7 @@ pub async fn monitor_windows(
                 log_tx,
                 format!("[monitor] Issue #{issue_num}: Claude idle, no PR — nudging"),
             );
+            toast(log_tx, "INFO", &format!("Nudged #{issue_num}"));
             let msg = format!(
                 "Have you pushed the branch and opened a PR to main referencing #{}? If not, please do that now.",
                 issue_num
@@ -275,6 +280,7 @@ pub async fn monitor_windows(
                 log_tx,
                 format!("[monitor] Issue #{issue_num}: Claude exited without PR — relaunched"),
             );
+            toast(log_tx, "WARNING", &format!("Relaunched #{issue_num}"));
 
             let comment = format!(
                 "🔄 **Vyshnav (Builder):** Relaunched Claude on issue #{issue_num} — previous run exited without a PR.\n\n**— Vyshnav (simulated builder)**"
@@ -303,6 +309,7 @@ pub async fn cleanup_finished(config: &Config, log_tx: &mpsc::UnboundedSender<St
             log_tx,
             format!("[cleanup] Issue #{issue_num} closed — removing window {idx} and worktree"),
         );
+        toast(log_tx, "SUCCESS", &format!("Closed #{issue_num} — cleaned up"));
 
         let worktree = format!(
             "{}/.claude/worktrees/issue-{issue_num}",
@@ -343,7 +350,9 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
         return;
     }
 
-    log(log_tx, format!("[rebase] Detected {} merged PR(s) since {last_check}", merged.len()));
+    let merged_count = merged.len();
+    log(log_tx, format!("[rebase] Detected {merged_count} merged PR(s) since {last_check}"));
+    toast(log_tx, "INFO", &format!("{merged_count} PR(s) merged — rebasing"));
 
     // Pull latest main
     let _ = tokio::process::Command::new("git")
@@ -403,6 +412,7 @@ pub async fn resume_after_backoff(
     backoff.lock().await.clear();
 
     log(log_tx, "[builder] Backoff cleared — sending 'continue' to idle Claude windows");
+    toast(log_tx, "INFO", "Rate limit cleared");
 
     let windows = list_windows(config).await;
     for (idx, name) in &windows {
