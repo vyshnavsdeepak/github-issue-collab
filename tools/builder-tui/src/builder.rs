@@ -192,7 +192,22 @@ async fn process_task(
 async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::UnboundedSender<String>) {
     let lower = cmd.to_lowercase();
 
-    if lower.contains("merge all") || lower.contains("merge prs") {
+    if lower.starts_with("merge pr ") {
+        let pr_num_str = &cmd["merge pr ".len()..].trim().to_string();
+        if let Ok(pr_num) = pr_num_str.parse::<u64>() {
+            log(log_tx, format!("[builder] Merging PR #{pr_num} via gh"));
+            match github::merge_pr(&config.repo, pr_num).await {
+                Ok(()) => {
+                    log(log_tx, format!("[builder] PR #{pr_num} merged"));
+                    toast(log_tx, "SUCCESS", &format!("Merged PR #{pr_num}!"));
+                }
+                Err(e) => {
+                    log(log_tx, format!("[builder] PR #{pr_num} merge failed: {e}"));
+                    toast(log_tx, "ERROR", &format!("PR #{pr_num} merge failed"));
+                }
+            }
+        }
+    } else if lower.contains("merge all") || lower.contains("merge prs") {
         log(log_tx, "[builder] Command: checking and merging open PRs");
         crate::monitor::check_and_merge_open_prs(config, log_tx).await;
     } else if lower.contains("rebase all") {

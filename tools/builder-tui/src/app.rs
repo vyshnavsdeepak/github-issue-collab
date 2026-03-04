@@ -274,6 +274,21 @@ impl App {
                     self.status_msg = "Checking and merging open PRs…".into();
                 }
             }
+            KeyCode::Char('M') => {
+                // Merge selected worker's PR directly via gh
+                if let Some(w) = self.workers.get(self.selected) {
+                    if let Some(pr) = &w.pr {
+                        let pr_num = pr.trim_start_matches('#').to_string();
+                        let name = w.window_name.clone();
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.send(format!("merge pr {pr_num}"));
+                            self.status_msg = format!("Merging {name} PR {pr}…");
+                        }
+                    } else {
+                        self.status_msg = "No PR for selected worker".into();
+                    }
+                }
+            }
             _ => {}
         }
         false

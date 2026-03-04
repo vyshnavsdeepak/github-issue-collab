@@ -431,16 +431,13 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
             log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT rebasing onto main"));
             toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
 
+            // Single-line: no embedded \n so Claude REPL submits on Enter
             let conflict_prompt = format!(
-                "IMPORTANT: New PRs have merged to main and your branch now has CONFLICTS. \
-                Please resolve them now:\n\
-                1. cd '{}'\n\
-                2. git fetch origin\n\
-                3. git rebase origin/main\n\
-                4. For each conflict: edit the file to resolve, then `git add <file>`, then `git rebase --continue`\n\
-                5. After all conflicts are resolved and rebase is done, force-push: git push --force-with-lease origin HEAD\n\
-                This is blocking your PR from being merged. Fix the conflicts before continuing.",
-                worktree
+                "IMPORTANT: New PRs merged to main and your branch has CONFLICTS. \
+                Resolve them: cd '{wt}' && git fetch origin && git rebase origin/main — \
+                for each conflicted file fix the markers then: git add <file> && git rebase --continue. \
+                When all resolved: git push --force-with-lease origin HEAD. Fix this before anything else.",
+                wt = worktree
             );
 
             if state == "claude_repl" {
