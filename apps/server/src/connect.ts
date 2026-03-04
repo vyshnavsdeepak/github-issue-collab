@@ -13,7 +13,8 @@ import {
   createInviteCode,
   revokeDesignerSession,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
+import type { Issue } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -137,6 +138,21 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     return
   }
 
+  const appId = process.env.GITHUB_APP_ID
+  let privateKey: string | null = null
+  try { privateKey = loadPrivateKey() } catch { /* skip issues if key missing */ }
+
+  let issues: Issue[] = []
+  if (appId && privateKey && user.repo) {
+    const [owner, repo] = user.repo.split('/')
+    try {
+      const token = await getInstallationToken(user.installation_id, appId, privateKey)
+      issues = await listIssues({ owner, repo, token, state: 'open', per_page: 25 })
+      // GitHub's issues endpoint includes PRs; filter them out
+      issues = issues.filter(i => !(i as unknown as { pull_request?: unknown }).pull_request)
+    } catch { /* non-fatal */ }
+  }
+
   const [sessions, invites] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
@@ -164,6 +180,19 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         </td>
       </tr>`).join('')
     : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No active designers yet — create an invite link below</td></tr>`
+
+  const issueRows = issues.length
+    ? issues.map(issue => `
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">#${issue.number}</td>
+        <td class="p-3 border-r-2 border-black">
+          <a href="${esc(issue.html_url)}" target="_blank" rel="noopener" class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
+          ${issue.labels.length ? `<div class="mt-1">${issue.labels.map(labelBadge).join('')}</div>` : ''}
+        </td>
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">${esc(issue.user?.login ?? '—')}</td>
+        <td class="p-3 text-xs text-gray-500 whitespace-nowrap">${timeAgo(issue.updated_at)}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">${user.repo ? 'No open issues' : 'No repo configured'}</td></tr>`
 
   const inviteRows = invites.length
     ? invites.map(i => {
@@ -212,7 +241,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-8 bg-black text-white">
     <p class="text-xs uppercase tracking-widest mb-2 text-green-400">✓ Live</p>
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
-    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'}</p>
+    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${issues.length} open issue${issues.length === 1 ? '' : 's'}</p>
   </section>
 
   <!-- DESIGNERS -->
@@ -252,6 +281,27 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           </tr>
         </thead>
         <tbody>${inviteRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ISSUES -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-lg">Open Issues</h3>
+      ${user.repo ? `<a href="https://github.com/${esc(user.repo)}/issues" target="_blank" rel="noopener" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white no-underline">View on GitHub →</a>` : ''}
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-16">#</th>
+            <th class="text-left p-3 border-r-2 border-white">Title / Labels</th>
+            <th class="text-left p-3 border-r-2 border-white w-32">Author</th>
+            <th class="text-left p-3 w-28">Updated</th>
+          </tr>
+        </thead>
+        <tbody>${issueRows}</tbody>
       </table>
     </div>
   </section>
@@ -399,6 +449,17 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
 
 function esc(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function labelBadge(label: { name: string; color: string }): string {
+  const bg = `#${label.color}`
+  // Perceived luminance to pick readable text color
+  const r = parseInt(label.color.slice(0, 2), 16)
+  const g = parseInt(label.color.slice(2, 4), 16)
+  const b = parseInt(label.color.slice(4, 6), 16)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  const fg = lum > 0.5 ? '#000' : '#fff'
+  return `<span style="background:${esc(bg)};color:${fg};border:1px solid rgba(0,0,0,0.2)" class="inline-block text-xs px-1.5 py-0.5 font-mono font-bold mr-1">${esc(label.name)}</span>`
 }
 
 function loginPage(error?: string): string {
