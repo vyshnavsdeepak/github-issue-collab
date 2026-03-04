@@ -9,9 +9,11 @@ import {
   updateUserGithubUser,
   updateUserRepo,
   listSessionsForUser,
-  listPendingInvitesForUser,
+  listAllInvitesForUser,
   createInviteCode,
   revokeDesignerSession,
+  revokeInviteCode,
+  type InviteCode,
 } from './db.js'
 import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
 
@@ -40,6 +42,13 @@ function timeAgo(dateStr: string | null): string {
   if (hrs < 24) return `${hrs}h ago`
   const days = Math.floor(hrs / 24)
   return `${days}d ago`
+}
+
+function inviteStatus(i: InviteCode): 'pending' | 'opened' | 'accepted' | 'revoked' {
+  if (i.revoked) return 'revoked'
+  if (i.used) return 'accepted'
+  if (i.opened_at) return 'opened'
+  return 'pending'
 }
 
 function parseCookie(req: Request, name: string): string | undefined {
@@ -139,7 +148,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   const [sessions, invites] = await Promise.all([
     listSessionsForUser(user.id),
-    listPendingInvitesForUser(user.id),
+    listAllInvitesForUser(user.id),
   ])
 
   const baseUrl = getBaseUrl(req)
@@ -168,19 +177,40 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   const inviteRows = invites.length
     ? invites.map(i => {
         const url = `${baseUrl}/invite?code=${i.code}`
+        const status = inviteStatus(i)
+        const statusClass = {
+          pending: 'bg-gray-100 text-gray-600',
+          opened: 'bg-yellow-100 text-yellow-800',
+          accepted: 'bg-green-100 text-green-800',
+          revoked: 'bg-red-100 text-red-700 line-through',
+        }[status]
+        const canRevoke = status === 'pending' || status === 'opened'
         return `
       <tr class="border-t-2 border-black">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
         <td class="p-3 border-r-2 border-black">
-          <span id="inv-${i.code}" class="font-mono text-xs">${esc(url)}</span>
+          ${status !== 'revoked' && status !== 'accepted'
+            ? `<span id="inv-${i.code}" class="font-mono text-xs">${esc(url)}</span>`
+            : `<span class="font-mono text-xs text-gray-400">${esc(url)}</span>`}
         </td>
         <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(i.created_at)}</td>
-        <td class="p-3">
-          <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
+        <td class="p-3 border-r-2 border-black">
+          <span class="text-xs font-bold px-2 py-0.5 border border-current ${statusClass}">${status}</span>
+        </td>
+        <td class="p-3 flex gap-2">
+          ${status !== 'revoked' && status !== 'accepted'
+            ? `<button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>`
+            : ''}
+          ${canRevoke
+            ? `<form method="POST" action="/dashboard/revoke-invite" class="inline">
+                <input type="hidden" name="code" value="${esc(i.code)}">
+                <button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Revoke</button>
+               </form>`
+            : ''}
         </td>
       </tr>`
       }).join('')
-    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No pending invite links</td></tr>`
+    : `<tr><td colspan="5" class="p-4 text-sm text-gray-400 text-center">No invite links yet — create one above</td></tr>`
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -212,16 +242,13 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-8 bg-black text-white">
     <p class="text-xs uppercase tracking-widest mb-2 text-green-400">✓ Live</p>
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
-    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'}</p>
+    <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.filter(i => inviteStatus(i) === 'pending').length} pending invite${invites.filter(i => inviteStatus(i) === 'pending').length === 1 ? '' : 's'}</p>
   </section>
 
   <!-- DESIGNERS -->
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <form method="POST" action="/dashboard/invite" class="inline">
-        <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
-      </form>
     </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm border-2 border-black">
@@ -240,7 +267,12 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   <!-- INVITES -->
   <section class="border-b-4 border-black px-6 py-6">
-    <h3 class="font-bold text-lg mb-4">Pending Invite Links</h3>
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-lg">Invites</h3>
+      <form method="POST" action="/dashboard/invite" class="inline">
+        <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
+      </form>
+    </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm border-2 border-black">
         <thead class="bg-black text-white">
@@ -248,7 +280,8 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
             <th class="text-left p-3 border-r-2 border-white w-24">Code</th>
             <th class="text-left p-3 border-r-2 border-white">Link</th>
             <th class="text-left p-3 border-r-2 border-white w-28">Created</th>
-            <th class="text-left p-3 w-20">Copy</th>
+            <th class="text-left p-3 border-r-2 border-white w-24">Status</th>
+            <th class="text-left p-3 w-32">Actions</th>
           </tr>
         </thead>
         <tbody>${inviteRows}</tbody>
@@ -379,6 +412,21 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   if (!user) { res.status(401).send('Invalid session'); return }
 
   await createInviteCode(user.id)
+  res.redirect('/dashboard')
+}
+
+export async function handleRevokeInvite(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  const body = req.body as Record<string, unknown>
+  const code = body['code'] as string | undefined
+
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+  if (!code) { res.status(400).send('Missing code'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  await revokeInviteCode(code)
   res.redirect('/dashboard')
 }
 

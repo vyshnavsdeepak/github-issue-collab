@@ -37,6 +37,8 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await db`ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ`
+  await db`ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS revoked BOOLEAN DEFAULT FALSE`
 }
 
 export interface User {
@@ -61,6 +63,8 @@ export interface InviteCode {
   code: string
   user_id: string
   used: boolean
+  opened_at: string | null
+  revoked: boolean
   created_at: string
 }
 
@@ -177,4 +181,22 @@ export async function listPendingInvitesForUser(userId: string): Promise<InviteC
     SELECT * FROM invite_codes WHERE user_id = ${userId} AND used = FALSE ORDER BY created_at DESC
   `
   return rows as InviteCode[]
+}
+
+export async function listAllInvitesForUser(userId: string): Promise<InviteCode[]> {
+  const db = sql()
+  const rows = await db`
+    SELECT * FROM invite_codes WHERE user_id = ${userId} ORDER BY created_at DESC
+  `
+  return rows as InviteCode[]
+}
+
+export async function markInviteOpened(code: string): Promise<void> {
+  const db = sql()
+  await db`UPDATE invite_codes SET opened_at = NOW() WHERE code = ${code} AND opened_at IS NULL AND used = FALSE AND revoked = FALSE`
+}
+
+export async function revokeInviteCode(code: string): Promise<void> {
+  const db = sql()
+  await db`UPDATE invite_codes SET revoked = TRUE WHERE code = ${code}`
 }

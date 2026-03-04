@@ -356,9 +356,16 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     return
   }
 
-  if (!inviteRecord || inviteRecord.used) {
+  if (!inviteRecord || inviteRecord.used || inviteRecord.revoked) {
     res.status(400).send('Invalid or already used invite code')
     return
+  }
+
+  // Track that the link has been opened
+  try {
+    await db.markInviteOpened(code)
+  } catch {
+    // non-fatal — continue serving the page
   }
 
   const ownerUser = await db.getUserById(inviteRecord.user_id)
@@ -425,7 +432,7 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     return
   }
 
-  if (!inviteRecord || inviteRecord.used) {
+  if (!inviteRecord || inviteRecord.used || inviteRecord.revoked) {
     res.status(400).send('Invalid or already used invite code')
     return
   }
