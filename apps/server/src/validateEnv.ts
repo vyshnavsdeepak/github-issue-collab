@@ -14,7 +14,7 @@ const REQUIRED: EnvVar[] = [
   { name: 'GITHUB_APP_CLIENT_ID', description: 'GitHub App OAuth client ID' },
   { name: 'GITHUB_APP_CLIENT_SECRET', description: 'GitHub App OAuth client secret' },
   { name: 'POSTGRES_URL', description: 'Neon Postgres connection string' },
-  { name: 'INVITE_BASE_URL', description: 'Public base URL of this server (e.g. https://your-app.vercel.app) — used to generate invite links' },
+  // INVITE_BASE_URL is optional — auto-derived from VERCEL_URL on Vercel, or falls back to localhost
 ]
 
 // Required unless GITHUB_PRIVATE_KEY_PATH is set
