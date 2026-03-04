@@ -147,7 +147,7 @@ export async function updateUserRepo(id: string, repo: string): Promise<void> {
 export async function createDesignerSession(params: {
   userId: string
   token: string
-  githubUser: string
+  githubUser?: string | null
   inviteCode?: string
 }): Promise<DesignerSession> {
   const db = sql()
