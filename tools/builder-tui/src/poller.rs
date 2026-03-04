@@ -96,9 +96,15 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
         let t = l.trim();
         t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
     });
+    let is_sleeping = pane.contains("Sleeping ");
+    let has_posted = pane.contains("posted a comment");
 
     if is_active {
         "active".to_string()
+    } else if has_posted {
+        "posted".to_string()
+    } else if is_sleeping {
+        "sleeping".to_string()
     } else if has_bypass && has_pr {
         "done".to_string()
     } else if has_bypass {
@@ -106,7 +112,13 @@ fn classify_state(pane: &str, has_pr: bool) -> String {
     } else if is_shell && has_pr {
         "done".to_string()
     } else if is_shell {
-        "shell".to_string()
+        // Distinguish queued (never launched Claude) from shell (crashed after running)
+        let has_claude_trace = pane.contains("claude") || pane.contains("Implement");
+        if has_claude_trace {
+            "shell".to_string()
+        } else {
+            "queued".to_string()
+        }
     } else {
         "unknown".to_string()
     }

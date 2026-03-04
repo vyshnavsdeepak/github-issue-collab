@@ -165,10 +165,6 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     }
   }
 
-  const activeRepoHasApp = user.repo
-    ? installationRepos.some(r => r.full_name === user.repo)
-    : false
-
   const [sessions, invites] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
@@ -263,18 +259,6 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${issues.length} open issue${issues.length === 1 ? '' : 's'}</p>
   </section>
 
-  ${user.repo && !activeRepoHasApp ? `<!-- APP NOT INSTALLED BANNER -->
-  <section class="border-b-4 border-black px-6 py-4 bg-yellow-50">
-    <div class="flex items-center gap-3">
-      <span class="text-orange-600 font-bold text-lg">⚠</span>
-      <div class="flex-1">
-        <span class="font-bold text-sm">GitHub App not installed on <code class="bg-yellow-100 px-1">${esc(user.repo)}</code></span>
-        <span class="text-xs text-gray-600 ml-2">— MCP tools cannot access issues on this repo</span>
-      </div>
-      <a href="https://github.com/apps/${esc(process.env.GITHUB_APP_SLUG ?? 'issue-collab-vyshnavsdeepak')}/installations/new" target="_blank" rel="noopener" class="text-xs font-bold border-2 border-orange-600 text-orange-600 px-3 py-1.5 hover:bg-orange-600 hover:text-white no-underline shrink-0">Install App →</a>
-    </div>
-  </section>` : ''}
-
   <!-- DESIGNERS -->
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
@@ -364,12 +348,9 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <div class="border-2 border-black">
       ${installationRepos.map((r, i) => {
         const isActive = r.full_name === user.repo
-        const appBadge = isActive
-          ? '<span class="text-xs text-green-400 mr-2">✓ App installed</span>'
-          : '<span class="text-xs text-green-600 mr-2">✓ App installed</span>'
         return `<div class="${i > 0 ? 'border-t-2 border-black ' : ''}flex items-center justify-between px-4 py-3 ${isActive ? 'bg-black text-white' : ''}">
           <span class="font-mono text-sm">${esc(r.full_name)}</span>
-          <span class="text-xs ml-4 shrink-0 flex items-center gap-2">${appBadge}${isActive
+          <span class="text-xs ml-4 shrink-0">${isActive
             ? '<span class="border-2 border-white px-2 py-0.5">active</span>'
             : `<form method="POST" action="/dashboard/set-repo" class="inline"><input type="hidden" name="repo" value="${esc(r.full_name)}"><button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Use this repo</button></form>`
           }</span>
