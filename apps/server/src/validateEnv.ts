@@ -11,6 +11,7 @@ interface EnvVar {
 // Always required
 const REQUIRED: EnvVar[] = [
   { name: 'GITHUB_APP_ID', description: 'GitHub App ID (found in GitHub App settings)' },
+  { name: 'GITHUB_APP_SLUG', description: 'GitHub App slug (used in install URLs, e.g. "my-app")' },
   { name: 'GITHUB_APP_CLIENT_ID', description: 'GitHub App OAuth client ID' },
   { name: 'GITHUB_APP_CLIENT_SECRET', description: 'GitHub App OAuth client secret' },
   { name: 'POSTGRES_URL', description: 'Neon Postgres connection string' },
