@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import { validateEnv } from './validateEnv'
+validateEnv()
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import express from 'express'
