@@ -53,7 +53,7 @@
         An MCP server that lets developers and designers interact with GitHub issues directly inside Claude.
         Hosted or local — your choice.
       </p>
-      <a href="/connect" class="font-mono font-bold text-lg bg-white text-black px-6 py-3 border-4 border-white inline-block no-underline hover:bg-black hover:text-white hover:border-white">
+      <a href="https://github-issue-collab-server.vercel.app/connect" class="font-mono font-bold text-lg bg-white text-black px-6 py-3 border-4 border-white inline-block no-underline hover:bg-black hover:text-white hover:border-white">
         Connect your repo →
       </a>
     </div>
@@ -68,7 +68,7 @@
         <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">HOSTED PATH</h3>
         <p class="font-sans text-sm mb-6">Zero local setup. Install the GitHub App, get an API key, paste one JSON snippet into Claude. No process to run.</p>
         <ol class="font-mono text-sm space-y-3">
-          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a></li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="https://github-issue-collab-server.vercel.app/connect">Connect your repo →</a></li>
           <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Copy the MCP config from the setup page</li>
           <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Paste into Claude — done</li>
         </ol>
@@ -84,7 +84,7 @@
         <h3 class="font-mono font-bold text-xl mb-4 border-b-2 border-black pb-2">LOCAL PATH</h3>
         <p class="font-sans text-sm mb-6">Run the server on your machine. Only 3 env vars — COLLAB_KEY replaces 5 GitHub App credentials.</p>
         <ol class="font-mono text-sm space-y-3">
-          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="/connect">Connect your repo →</a> to get a COLLAB_KEY</li>
+          <li class="flex gap-3"><span class="text-red-500 font-bold">01</span> <a href="https://github-issue-collab-server.vercel.app/connect">Connect your repo →</a> to get a COLLAB_KEY</li>
           <li class="flex gap-3"><span class="text-red-500 font-bold">02</span> Set 3 env vars in <code class="bg-gray-100 px-1">.env</code></li>
           <li class="flex gap-3"><span class="text-red-500 font-bold">03</span> Run <code class="bg-gray-100 px-1">npm run dev</code></li>
         </ol>
@@ -136,7 +136,7 @@ DEV_SECRET=random</pre>
     <pre class="font-mono text-sm bg-gray-900 border-2 border-white p-5 overflow-x-auto max-w-2xl">{
   "mcpServers": {
     "github-collab": {
-      "url": "https://server-pink-six-81.vercel.app/mcp",
+      "url": "https://github-issue-collab-server.vercel.app/mcp",
       "headers": {
         "Authorization": "Bearer &lt;api_key&gt;"
       }
