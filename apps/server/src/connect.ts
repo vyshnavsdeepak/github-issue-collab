@@ -11,6 +11,8 @@ import {
   listSessionsForUser,
   listPendingInvitesForUser,
   createInviteCode,
+  resendInviteCode,
+  isInviteExpired,
   revokeDesignerSession,
   recordInviteEvent,
   getFunnelForUser,
@@ -52,6 +54,18 @@ function timeAgo(dateStr: string | null): string {
   if (hrs < 24) return `${hrs}h ago`
   const days = Math.floor(hrs / 24)
   return `${days}d ago`
+}
+
+function timeUntilExpiry(expiresAt: string | null): string {
+  if (!expiresAt) return 'no expiry'
+  const diff = new Date(expiresAt).getTime() - Date.now()
+  if (diff <= 0) return 'expired'
+  const mins = Math.floor(diff / 60000)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  const days = Math.floor(hrs / 24)
+  return `${days}d`
 }
 
 function parseCookie(req: Request, name: string): string | undefined {
@@ -255,16 +269,26 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   const inviteRows = invites.length
     ? invites.map(i => {
         const url = `${getInviteBaseUrl()}/invite?code=${i.code}`
+        const expired = isInviteExpired(i)
+        const expiryLabel = timeUntilExpiry(i.expires_at)
+        const expiryCell = expired
+          ? `<span class="text-xs font-bold text-red-600">expired</span>`
+          : `<span class="text-xs text-gray-500">expires in ${esc(expiryLabel)}</span>`
         const actionCell = i.is_demo
           ? `<span class="text-xs font-bold border-2 border-gray-400 px-2 py-0.5 text-gray-400">Demo — do not share</span>`
-          : `<button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>`
+          : expired
+            ? `<button onclick="resendInvite('${esc(i.code)}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Resend</button>`
+            : `<div class="flex gap-2">
+                <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
+                <button onclick="resendInvite('${esc(i.code)}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Resend</button>
+               </div>`
         return `
-      <tr class="border-t-2 border-black${i.is_demo ? ' opacity-50' : ''}">
+      <tr class="border-t-2 border-black${i.is_demo ? ' opacity-50' : ''}${expired ? ' bg-red-50' : ''}">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
         <td class="p-3 border-r-2 border-black">
-          <span id="inv-${i.code}" class="font-mono text-xs">${esc(url)}</span>
+          <span id="inv-${i.code}" class="font-mono text-xs${expired ? ' text-gray-400 line-through' : ''}">${esc(url)}</span>
         </td>
-        <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(i.created_at)}</td>
+        <td class="p-3 border-r-2 border-black text-xs">${expiryCell}</td>
         <td class="p-3">
           ${actionCell}
         </td>
@@ -379,8 +403,8 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           <tr>
             <th class="text-left p-3 border-r-2 border-white w-24">Code</th>
             <th class="text-left p-3 border-r-2 border-white">Link</th>
-            <th class="text-left p-3 border-r-2 border-white w-28">Created</th>
-            <th class="text-left p-3 w-20">Copy</th>
+            <th class="text-left p-3 border-r-2 border-white w-32">Expiry</th>
+            <th class="text-left p-3 w-36">Actions</th>
           </tr>
         </thead>
         <tbody>${inviteRows}</tbody>
@@ -456,6 +480,23 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 function copyEl(id, btn) {
   navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
     .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+}
+async function resendInvite(code, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/dashboard/resend-invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    await navigator.clipboard.writeText(data.url).catch(() => {});
+    btn.textContent = 'Copied ✓';
+  } catch (e) {
+    btn.textContent = 'Error';
+  }
+  setTimeout(() => location.reload(), 2000);
 }
   </script>
 </body>
@@ -567,6 +608,22 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
 
   await revokeDesignerSession(sessionId)
   res.redirect('/dashboard')
+}
+
+export async function handleResendInvite(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const oldCode = body['code'] as string | undefined
+  if (!oldCode) { res.status(400).send('Missing code'); return }
+
+  const newInvite = await resendInviteCode(oldCode, user.id)
+  const inviteUrl = `${getInviteBaseUrl()}/invite?code=${newInvite.code}`
+  res.json({ code: newInvite.code, url: inviteUrl })
 }
 
 export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {

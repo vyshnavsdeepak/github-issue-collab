@@ -49,6 +49,12 @@ export async function runMigrations(): Promise<void> {
       created_at  TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await db`
+    ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
+  `
+  await db`
+    UPDATE invite_codes SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL
+  `
 }
 
 export interface User {
@@ -86,6 +92,7 @@ export interface InviteCode {
   used: boolean
   is_demo: boolean
   created_at: string
+  expires_at: string | null
 }
 
 export async function createUser(params: {
@@ -171,13 +178,28 @@ export async function listSessionsForUser(userId: string): Promise<DesignerSessi
   return rows as DesignerSession[]
 }
 
-export async function createInviteCode(userId: string, isDemo = false): Promise<InviteCode> {
+export async function createInviteCode(userId: string, isDemo = false, ttlDays?: number): Promise<InviteCode> {
   const db = sql()
   const code = randomUUID()
+  const days = ttlDays ?? Number(process.env.INVITE_TTL_DAYS ?? 7)
   const rows = await db`
-    INSERT INTO invite_codes (code, user_id, is_demo) VALUES (${code}, ${userId}, ${isDemo}) RETURNING *
+    INSERT INTO invite_codes (code, user_id, is_demo, expires_at)
+    VALUES (${code}, ${userId}, ${isDemo}, NOW() + (${days} || ' days')::INTERVAL)
+    RETURNING *
   `
   return rows[0] as InviteCode
+}
+
+export async function resendInviteCode(oldCode: string, userId: string): Promise<InviteCode> {
+  const db = sql()
+  // Mark the old code as used so it disappears from the pending list
+  await db`UPDATE invite_codes SET used = TRUE WHERE code = ${oldCode} AND user_id = ${userId}`
+  return createInviteCode(userId)
+}
+
+export function isInviteExpired(invite: InviteCode): boolean {
+  if (!invite.expires_at) return false
+  return new Date(invite.expires_at) < new Date()
 }
 
 export async function getInviteCode(code: string): Promise<InviteCode | null> {
@@ -199,7 +221,9 @@ export async function revokeDesignerSession(sessionId: string): Promise<void> {
 export async function listPendingInvitesForUser(userId: string): Promise<InviteCode[]> {
   const db = sql()
   const rows = await db`
-    SELECT * FROM invite_codes WHERE user_id = ${userId} AND used = FALSE ORDER BY created_at DESC
+    SELECT * FROM invite_codes
+    WHERE user_id = ${userId} AND used = FALSE
+    ORDER BY created_at DESC
   `
   return rows as InviteCode[]
 }

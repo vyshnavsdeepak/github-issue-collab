@@ -456,6 +456,15 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     return
   }
 
+  if (db.isInviteExpired(inviteRecord)) {
+    res.status(410).send(errorPage({
+      title: 'Invite expired',
+      message: 'This invite link has expired.',
+      hint: 'Ask the developer who invited you to generate a new invite link.',
+    }))
+    return
+  }
+
   if (inviteRecord.used) {
     res.status(400).send(errorPage({
       title: 'Invite already used',
@@ -554,6 +563,11 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
       message: 'This invite link has already been accepted. Each invite link can only be used once.',
       hint: 'Ask the developer who invited you to generate a new invite link for you.',
     }))
+    return
+  }
+
+  if (db.isInviteExpired(inviteRecord)) {
+    res.status(410).send('This invite link has expired. Ask the developer to send a new one.')
     return
   }
 

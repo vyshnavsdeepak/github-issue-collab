@@ -69,6 +69,11 @@ vi.mock('../db.js', () => ({
   updateDesignerLastSeen: () => Promise.resolve(),
   listSessionsForUser: () => Promise.resolve([]),
   listPendingInvitesForUser: () => Promise.resolve([]),
+  isInviteExpired: (invite: Record<string, unknown>) => {
+    if (!invite['expires_at']) return false
+    return new Date(invite['expires_at'] as string) < new Date()
+  },
+  resendInviteCode: () => Promise.resolve(null),
   runMigrations: () => Promise.resolve(),
   countInviteCodes: () => Promise.resolve(inviteCodes.size),
   getFirstUser: () => Promise.resolve([...users.values()][0] ?? null),
