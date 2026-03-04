@@ -15,6 +15,7 @@ import {
 } from './db.js'
 import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
 import type { Issue } from './github.js'
+import { errorPage } from './ui.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -67,13 +68,22 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
   const installationId = req.query['installation_id'] as string | undefined
 
   if (!installationId) {
-    res.status(400).send('Missing installation_id')
+    res.status(400).send(errorPage({
+      title: 'App installation not detected',
+      message: 'The GitHub App installation ID is missing. This usually means the installation did not complete successfully.',
+      hint: 'Try installing the GitHub App again. If the problem persists, contact support.',
+      action: { label: 'Install GitHub App', href: '/connect' },
+    }))
     return
   }
 
   const appId = process.env.GITHUB_APP_ID
   if (!appId) {
-    res.status(500).send('GITHUB_APP_ID not configured')
+    res.status(500).send(errorPage({
+      title: 'Server misconfiguration',
+      message: 'The GITHUB_APP_ID environment variable is not set. This is a server configuration issue.',
+      hint: 'Contact the site administrator to configure the GitHub App credentials.',
+    }))
     return
   }
 
@@ -81,7 +91,11 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
   try {
     privateKey = loadPrivateKey()
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err))
+    res.status(500).send(errorPage({
+      title: 'Server misconfiguration',
+      message: 'The GitHub App private key is not configured correctly on this server.',
+      hint: 'Contact the site administrator to set GITHUB_PRIVATE_KEY or GITHUB_PRIVATE_KEY_PATH.',
+    }))
     return
   }
 
@@ -95,7 +109,12 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
     githubUser = installation.account.login
     repos = repoList
   } catch (err) {
-    res.status(502).send(`GitHub API error: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(502).send(errorPage({
+      title: 'Could not verify GitHub App installation',
+      message: 'We were unable to communicate with GitHub to confirm your app installation. The installation may be incomplete or the app credentials may be incorrect.',
+      hint: 'Check that the GitHub App is installed on your account and that the correct repositories are selected. Then try connecting again.',
+      action: { label: 'Try again', href: '/connect' },
+    }))
     return
   }
 
@@ -104,7 +123,11 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
   try {
     await runMigrations()
   } catch (err) {
-    res.status(500).send(`DB migration error: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).send(errorPage({
+      title: 'Database error',
+      message: 'We could not initialize the database. This is a server-side issue.',
+      hint: 'Contact the site administrator. The database may need to be configured or repaired.',
+    }))
     return
   }
 
@@ -124,7 +147,12 @@ export async function handleConnectCallback(req: Request, res: Response): Promis
       user = await createUser({ installationId, githubUser, repo: firstRepo ?? undefined })
     }
   } catch (err) {
-    res.status(500).send(`DB error: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).send(errorPage({
+      title: 'Database error',
+      message: 'We could not save your account information. Please try connecting again.',
+      hint: 'If this keeps happening, contact the site administrator.',
+      action: { label: 'Try again', href: '/connect' },
+    }))
     return
   }
 

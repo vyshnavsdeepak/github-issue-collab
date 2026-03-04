@@ -11,6 +11,7 @@ import {
   addLabel,
   removeLabel,
 } from './github.js'
+import { esc, errorPage } from './ui.js'
 
 const CACHE_TTL_MS = 60_000
 
@@ -416,7 +417,11 @@ export async function handleMcp(req: Request, res: Response): Promise<void> {
 export async function handleInvite(req: Request, res: Response): Promise<void> {
   const code = req.query['code'] as string | undefined
   if (!code) {
-    res.status(400).send('Missing code parameter')
+    res.status(400).send(errorPage({
+      title: 'Invite link is broken',
+      message: 'This link is missing a required code. The link may have been copied incorrectly or truncated.',
+      hint: 'Ask the developer who invited you to send a new invite link.',
+    }))
     return
   }
 
@@ -424,12 +429,29 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   try {
     inviteRecord = await db.getInviteCode(code)
   } catch (err) {
-    res.status(500).send(`DB error: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).send(errorPage({
+      title: 'Something went wrong',
+      message: 'We could not look up your invite code. Please try again in a moment.',
+      hint: 'If this keeps happening, contact the developer who invited you.',
+    }))
     return
   }
 
-  if (!inviteRecord || inviteRecord.used) {
-    res.status(400).send('Invalid or already used invite code')
+  if (!inviteRecord) {
+    res.status(400).send(errorPage({
+      title: 'Invite not found',
+      message: 'This invite link does not match any known invite. It may have been deleted or was never valid.',
+      hint: 'Ask the developer who invited you to generate and send a new invite link.',
+    }))
+    return
+  }
+
+  if (inviteRecord.used) {
+    res.status(400).send(errorPage({
+      title: 'Invite already used',
+      message: 'This invite link has already been accepted. Each invite link can only be used once.',
+      hint: 'Ask the developer who invited you to generate a new invite link for you.',
+    }))
     return
   }
 
@@ -485,7 +507,11 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
   const name = ((body?.['name'] as string | undefined) ?? '').trim()
 
   if (!code || !name) {
-    res.status(400).send('Missing code or name')
+    res.status(400).send(errorPage({
+      title: 'Invite link is broken',
+      message: 'The invite submission was missing required information. The link may have been altered.',
+      hint: 'Ask the developer who invited you to send a new invite link.',
+    }))
     return
   }
 
@@ -493,12 +519,29 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
   try {
     inviteRecord = await db.getInviteCode(code)
   } catch (err) {
-    res.status(500).send(`DB error: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(500).send(errorPage({
+      title: 'Something went wrong',
+      message: 'We could not look up your invite code. Please try again in a moment.',
+      hint: 'If this keeps happening, contact the developer who invited you.',
+    }))
     return
   }
 
-  if (!inviteRecord || inviteRecord.used) {
-    res.status(400).send('Invalid or already used invite code')
+  if (!inviteRecord) {
+    res.status(400).send(errorPage({
+      title: 'Invite not found',
+      message: 'This invite link does not match any known invite. It may have been deleted or was never valid.',
+      hint: 'Ask the developer who invited you to generate and send a new invite link.',
+    }))
+    return
+  }
+
+  if (inviteRecord.used) {
+    res.status(400).send(errorPage({
+      title: 'Invite already used',
+      message: 'This invite link has already been accepted. Each invite link can only be used once.',
+      hint: 'Ask the developer who invited you to generate a new invite link for you.',
+    }))
     return
   }
 
