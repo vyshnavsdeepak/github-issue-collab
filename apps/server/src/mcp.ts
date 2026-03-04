@@ -245,7 +245,7 @@ async function callTool(
           created_at: s.created_at,
           last_seen: s.last_seen,
         })),
-        pending_invites: pendingInvites.map((i) => ({
+        pending_invites: pendingInvites.filter((i) => !i.is_demo).map((i) => ({
           code: i.code,
           invite_url: `${getInviteBaseUrl()}/invite?code=${i.code}`,
           created_at: i.created_at,

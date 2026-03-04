@@ -204,15 +204,18 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   const inviteRows = invites.length
     ? invites.map(i => {
         const url = `${getInviteBaseUrl()}/invite?code=${i.code}`
+        const actionCell = i.is_demo
+          ? `<span class="text-xs font-bold border-2 border-gray-400 px-2 py-0.5 text-gray-400">Demo — do not share</span>`
+          : `<button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>`
         return `
-      <tr class="border-t-2 border-black">
+      <tr class="border-t-2 border-black${i.is_demo ? ' opacity-50' : ''}">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
         <td class="p-3 border-r-2 border-black">
           <span id="inv-${i.code}" class="font-mono text-xs">${esc(url)}</span>
         </td>
         <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(i.created_at)}</td>
         <td class="p-3">
-          <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
+          ${actionCell}
         </td>
       </tr>`
       }).join('')
