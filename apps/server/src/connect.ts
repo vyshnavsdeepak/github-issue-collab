@@ -12,6 +12,9 @@ import {
   listPendingInvitesForUser,
   createInviteCode,
   revokeDesignerSession,
+  recordInviteEvent,
+  getFunnelForUser,
+  type FunnelRow,
 } from './db.js'
 import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
 import type { Issue } from './github.js'
@@ -193,9 +196,10 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     }
   }
 
-  const [sessions, invites] = await Promise.all([
+  const [sessions, invites, funnel] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
+    getFunnelForUser(user.id),
   ])
 
   const baseUrl = getBaseUrl(req)
@@ -205,6 +209,20 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     null, 2
   )
   const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${apiKey}" \\\n  ${mcpUrl}`
+
+  const check = (v: boolean) => v ? '<span class="text-green-600 font-bold">✓</span>' : '<span class="text-gray-300">—</span>'
+  const funnelRows = funnel.length
+    ? funnel.map((f: FunnelRow) => `
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${f.invite_code.slice(0, 8)}…</td>
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(f.created_at)}</td>
+        <td class="p-3 border-r-2 border-black text-center">${check(f.invite_generated)}</td>
+        <td class="p-3 border-r-2 border-black text-center">${check(f.invite_opened)}</td>
+        <td class="p-3 border-r-2 border-black text-center">${check(f.config_started)}</td>
+        <td class="p-3 border-r-2 border-black text-center">${check(f.issue_viewed)}</td>
+        <td class="p-3 text-center">${check(f.comment_submitted)}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="7" class="p-4 text-sm text-gray-400 text-center">No invites yet — create one below</td></tr>`
 
   const designerRows = sessions.length
     ? sessions.map(s => `
@@ -285,6 +303,27 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <p class="text-xs uppercase tracking-widest mb-2 text-green-400">✓ Live</p>
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
     <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${issues.length} open issue${issues.length === 1 ? '' : 's'}</p>
+  </section>
+
+  <!-- FUNNEL -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Invite Funnel</h3>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-28">Code</th>
+            <th class="text-left p-3 border-r-2 border-white w-24">Created</th>
+            <th class="text-center p-3 border-r-2 border-white">Generated</th>
+            <th class="text-center p-3 border-r-2 border-white">Opened</th>
+            <th class="text-center p-3 border-r-2 border-white">Config</th>
+            <th class="text-center p-3 border-r-2 border-white">Issue Viewed</th>
+            <th class="text-center p-3">Comment</th>
+          </tr>
+        </thead>
+        <tbody>${funnelRows}</tbody>
+      </table>
+    </div>
   </section>
 
   <!-- DESIGNERS -->
@@ -510,6 +549,7 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   if (!user) { res.status(401).send('Invalid session'); return }
 
   const invite = await createInviteCode(user.id)
+  void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
   res.json({ code: invite.code, url: inviteUrl })
 }
