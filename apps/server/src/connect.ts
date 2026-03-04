@@ -18,7 +18,7 @@ import {
   getFunnelForUser,
   type FunnelRow,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, addComment } from './github.js'
 import type { Issue } from './github.js'
 import { errorPage } from './ui.js'
 
@@ -354,28 +354,58 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <div class="inline flex items-center gap-2">
-        <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
-        <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
+      <div class="flex flex-col items-end gap-2">
+        <button id="new-invite-btn" onclick="toggleInviteForm()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
+        <div id="invite-form" class="hidden border-2 border-black p-3 text-xs bg-white">
+          <p class="text-gray-500 mb-2">Optional: @mention a designer on a GitHub issue</p>
+          <div class="flex gap-2 mb-2">
+            <input id="invite-username" type="text" placeholder="GitHub username" class="border-2 border-black px-2 py-1 font-mono text-xs w-40 outline-none" autocomplete="off">
+            <input id="invite-issue" type="number" placeholder="Issue #" class="border-2 border-black px-2 py-1 font-mono text-xs w-24 outline-none" min="1">
+          </div>
+          <div class="flex gap-2 items-center">
+            <button onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1 hover:bg-white hover:text-black">Create</button>
+            <button onclick="toggleInviteForm()" class="text-xs border-2 border-black px-3 py-1 hover:bg-black hover:text-white">Cancel</button>
+          </div>
+        </div>
+        <div id="invite-result" class="hidden text-xs font-mono break-all max-w-xs"></div>
       </div>
       <script>
+        function toggleInviteForm() {
+          const form = document.getElementById('invite-form');
+          form.classList.toggle('hidden');
+        }
         async function createInvite() {
-          const btn = document.getElementById('new-invite-btn');
-          const display = document.getElementById('invite-url-display');
+          const username = document.getElementById('invite-username').value.trim();
+          const issueRaw = document.getElementById('invite-issue').value.trim();
+          const result = document.getElementById('invite-result');
+          const btn = event.target;
           btn.disabled = true;
           btn.textContent = '...';
           try {
-            const res = await fetch('/dashboard/invite', { method: 'POST' });
+            const payload = {};
+            if (username) payload.github_username = username;
+            if (issueRaw) payload.issue_number = parseInt(issueRaw, 10);
+            const res = await fetch('/dashboard/invite', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
             const data = await res.json();
-            display.textContent = data.url;
-            display.classList.remove('hidden');
+            let msg = data.url;
+            if (data.github_comment_url) {
+              msg += ' — <a href="' + data.github_comment_url + '" target="_blank" rel="noopener" class="underline">Comment posted ↗</a>';
+            }
+            result.innerHTML = msg;
+            result.classList.remove('hidden');
             await navigator.clipboard.writeText(data.url).catch(() => {});
-            btn.textContent = '+ New Invite Link';
+            btn.textContent = 'Create';
           } catch (e) {
-            btn.textContent = 'Error';
+            result.textContent = 'Error creating invite';
+            result.classList.remove('hidden');
+            btn.textContent = 'Create';
           }
           btn.disabled = false;
-          setTimeout(() => location.reload(), 3000);
+          setTimeout(() => location.reload(), 4000);
         }
       </script>
     </div>
@@ -589,10 +619,37 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   const user = await getUserByApiKey(apiKey)
   if (!user) { res.status(401).send('Invalid session'); return }
 
+  const body = req.body as Record<string, unknown>
+  const githubUsername = (body['github_username'] as string | undefined)?.trim() || undefined
+  const issueNumberRaw = body['issue_number']
+  const issueNumber = issueNumberRaw ? parseInt(String(issueNumberRaw), 10) : undefined
+
   const invite = await createInviteCode(user.id)
   void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
-  res.json({ code: invite.code, url: inviteUrl })
+
+  let githubCommentUrl: string | undefined
+  if (githubUsername && issueNumber && !isNaN(issueNumber) && user.repo && user.installation_id) {
+    const appId = process.env.GITHUB_APP_ID
+    let privateKey: string | null = null
+    try { privateKey = loadPrivateKey() } catch { /* skip */ }
+    if (appId && privateKey) {
+      try {
+        const token = await getInstallationToken(user.installation_id, appId, privateKey)
+        const [owner, repo] = user.repo.split('/')
+        const comment = await addComment({
+          owner,
+          repo,
+          issueNumber,
+          token,
+          body: `Hey @${githubUsername}, your design input is needed here: ${inviteUrl}`,
+        })
+        githubCommentUrl = comment.html_url
+      } catch { /* non-fatal — still return invite URL */ }
+    }
+  }
+
+  res.json({ code: invite.code, url: inviteUrl, ...(githubCommentUrl ? { github_comment_url: githubCommentUrl } : {}) })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
