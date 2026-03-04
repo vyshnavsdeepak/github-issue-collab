@@ -1,12 +1,15 @@
 import 'dotenv/config'
+import { validateEnv } from './validateEnv'
+validateEnv()
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
-import { getUserByApiKey } from './db'
-import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleRevokeSession } from './connect'
+import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
+import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
+import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
 
 const app = express()
 app.use(express.json())
@@ -63,12 +66,32 @@ app.post('/dashboard/revoke', (req, res) => {
   void handleRevokeSession(req, res)
 })
 
+app.post('/dashboard/set-repo', (req, res) => {
+  void handleDashboardSetRepo(req, res)
+})
+
 app.get('/invite', (req, res) => {
   void handleInvite(req, res)
 })
 
 app.post('/invite/callback', (req, res) => {
   void handleInviteCallback(req, res)
+})
+
+app.get('/designer', (req, res) => {
+  void handleDesignerPortal(req, res)
+})
+
+app.get('/designer/issue/:number', (req, res) => {
+  void handleDesignerIssue(req, res)
+})
+
+app.post('/designer/comment', (req, res) => {
+  void handleDesignerComment(req, res)
+})
+
+app.post('/designer/decision', (req, res) => {
+  void handleDesignerDecision(req, res)
 })
 
 app.post('/mcp', (req, res) => {
@@ -123,6 +146,41 @@ app.post('/token', async (req, res) => {
   }
 })
 
+async function seedDemoInviteIfNeeded(): Promise<void> {
+  if (!process.env.POSTGRES_URL) return
+  try {
+    await runMigrations()
+    const count = await countInviteCodes()
+    if (count > 0) return
+    const user = await getFirstUser()
+    if (!user) {
+      console.log('[demo] Invites table is empty but no users found — complete the /connect flow first.')
+      return
+    }
+    const invite = await createInviteCode(user.id, true)
+    const baseUrl =
+      process.env.INVITE_BASE_URL ??
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${process.env.PORT ?? 3000}`)
+    console.log(`[demo] Invites table was empty — created demo invite for ${user.github_user ?? user.id}:`)
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      console.log('[demo] Demo invite created — retrieve URL from your developer dashboard')
+    } else {
+      console.log(`[demo]   ${baseUrl}/invite?code=${invite.code}`)
+    }
+  } catch (err) {
+    console.warn(`[demo] Could not seed demo invite: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Warn if invite base URL cannot be derived from environment
+if (!process.env.INVITE_BASE_URL && !process.env.VERCEL_URL) {
+  console.warn(
+    'Warning: INVITE_BASE_URL and VERCEL_URL are not set. ' +
+    'Invite links will fall back to http://localhost:3000. ' +
+    'Set INVITE_BASE_URL (or deploy on Vercel) for correct invite URLs in production.'
+  )
+}
+
 // Export for Vercel serverless
 export default app
 
@@ -138,5 +196,9 @@ if (!process.env.VERCEL) {
     console.log(`  POST /invite/callback`)
     console.log(`  POST /mcp   (hosted MCP)`)
     console.log(`  POST /token (installation token broker)`)
+    void seedDemoInviteIfNeeded()
   })
+} else {
+  // On Vercel cold start, attempt seeding in the background
+  void seedDemoInviteIfNeeded()
 }
