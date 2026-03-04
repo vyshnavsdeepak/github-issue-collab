@@ -161,6 +161,64 @@ export async function getAuthUser(token: string): Promise<{ login: string }> {
   return ghFetch<{ login: string }>('https://api.github.com/user', token)
 }
 
+export async function getSuggestedDesigners(params: {
+  owner: string
+  repo: string
+  token: string
+}): Promise<Array<{ login: string; issueNumbers: number[] }>> {
+  const { owner, repo, token } = params
+
+  const [issues, contributors] = await Promise.all([
+    ghFetch<Issue[]>(
+      `https://api.github.com/repos/${owner}/${repo}/issues?labels=designer-input&state=all&per_page=5&sort=updated`,
+      token
+    ).catch(() => [] as Issue[]),
+    ghFetch<Array<{ login?: string }>>(
+      `https://api.github.com/repos/${owner}/${repo}/contributors?per_page=100`,
+      token
+    ).catch(() => [] as Array<{ login?: string }>),
+  ])
+
+  const contributorSet = new Set(
+    contributors.flatMap(c => (c.login ? [c.login.toLowerCase()] : []))
+  )
+
+  const candidates = new Map<string, { login: string; issueNumbers: number[] }>()
+
+  function addCandidate(login: string, issueNumber: number) {
+    if (login.toLowerCase().endsWith('[bot]')) return
+    const key = login.toLowerCase()
+    if (contributorSet.has(key)) return
+    const existing = candidates.get(key)
+    if (existing) {
+      if (!existing.issueNumbers.includes(issueNumber)) existing.issueNumbers.push(issueNumber)
+    } else {
+      candidates.set(key, { login, issueNumbers: [issueNumber] })
+    }
+  }
+
+  for (const issue of issues) {
+    if (issue.user) addCandidate(issue.user.login, issue.number)
+  }
+
+  const commentResults = await Promise.allSettled(
+    issues.map(issue =>
+      listIssueComments({ owner, repo, issueNumber: issue.number, token })
+        .then(comments => ({ issueNumber: issue.number, comments }))
+    )
+  )
+
+  for (const result of commentResults) {
+    if (result.status !== 'fulfilled') continue
+    const { issueNumber, comments } = result.value
+    for (const comment of comments) {
+      if (comment.user) addCandidate(comment.user.login, issueNumber)
+    }
+  }
+
+  return Array.from(candidates.values()).slice(0, 10)
+}
+
 export async function getInstallationRepos(
   installationId: string,
   appId: string,
