@@ -70,10 +70,12 @@ export async function listIssues(params: {
   token: string
   state?: 'open' | 'closed' | 'all'
   per_page?: number
+  labels?: string
 }): Promise<Issue[]> {
-  const { owner, repo, token, state = 'open', per_page = 30 } = params
+  const { owner, repo, token, state = 'open', per_page = 30, labels } = params
+  const labelParam = labels ? `&labels=${encodeURIComponent(labels)}` : ''
   return ghFetch<Issue[]>(
-    `https://api.github.com/repos/${owner}/${repo}/issues?state=${state}&per_page=${per_page}&sort=updated`,
+    `https://api.github.com/repos/${owner}/${repo}/issues?state=${state}&per_page=${per_page}&sort=updated${labelParam}`,
     token
   )
 }

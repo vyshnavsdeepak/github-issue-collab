@@ -13,7 +13,7 @@ import {
   createInviteCode,
   revokeDesignerSession,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, listIssueComments, type Issue, type IssueComment } from './github.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -142,6 +142,28 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     listPendingInvitesForUser(user.id),
   ])
 
+  // Fetch designer-input issues with comment status
+  let designerIssues: Array<{ issue: Issue; comments: IssueComment[] }> = []
+  if (user.repo && user.installation_id) {
+    const appId = process.env.GITHUB_APP_ID
+    const privateKey = loadPrivateKey()
+    if (appId) {
+      try {
+        const installToken = await getInstallationToken(user.installation_id, appId, privateKey)
+        const [owner, repo] = user.repo.split('/')
+        if (owner && repo) {
+          const issues = await listIssues({ owner, repo, token: installToken, labels: 'designer-input', per_page: 50 })
+          const commentLists = await Promise.all(
+            issues.map(issue => listIssueComments({ owner, repo, issueNumber: issue.number, token: installToken }))
+          )
+          designerIssues = issues.map((issue, i) => ({ issue, comments: commentLists[i] ?? [] }))
+        }
+      } catch {
+        // Non-fatal: skip issue section if GitHub API fails
+      }
+    }
+  }
+
   const baseUrl = getBaseUrl(req)
   const mcpUrl = `${baseUrl}/mcp`
   const hostedConfig = JSON.stringify(
@@ -149,6 +171,30 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     null, 2
   )
   const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${apiKey}" \\\n  ${mcpUrl}`
+
+  const issueRows = designerIssues.length
+    ? designerIssues.map(({ issue, comments }) => {
+        const hasResponse = comments.length > 0
+        const badge = hasResponse
+          ? `<span class="inline-block border-2 border-black bg-black text-white text-xs px-2 py-0.5 font-bold">Responded</span>`
+          : `<span class="inline-block border-2 border-black text-xs px-2 py-0.5 font-bold text-yellow-700 bg-yellow-50">Awaiting</span>`
+        const lastComment = hasResponse ? comments[comments.length - 1] : null
+        const commentInfo = lastComment
+          ? ` <span class="text-gray-400 text-xs">by ${esc(lastComment.user?.login ?? '?')} ${timeAgo(lastComment.created_at)}</span>`
+          : ''
+        return `
+      <tr class="border-t-2 border-black">
+        <td class="p-3 border-r-2 border-black text-gray-500 text-xs">#${issue.number}</td>
+        <td class="p-3 border-r-2 border-black">
+          <a href="${esc(issue.html_url)}" target="_blank" class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
+        </td>
+        <td class="p-3 border-r-2 border-black text-xs text-gray-500">${timeAgo(issue.updated_at)}</td>
+        <td class="p-3">${badge}${commentInfo}</td>
+      </tr>`
+      }).join('')
+    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">${
+        user.repo ? 'No open issues labeled <code>designer-input</code>' : 'No repo configured'
+      }</td></tr>`
 
   const designerRows = sessions.length
     ? sessions.map(s => `
@@ -252,6 +298,24 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           </tr>
         </thead>
         <tbody>${inviteRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- DESIGNER-INPUT ISSUES -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Designer Input Issues</h3>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white w-16">#</th>
+            <th class="text-left p-3 border-r-2 border-white">Issue</th>
+            <th class="text-left p-3 border-r-2 border-white w-32">Updated</th>
+            <th class="text-left p-3 w-32">Status</th>
+          </tr>
+        </thead>
+        <tbody>${issueRows}</tbody>
       </table>
     </div>
   </section>
