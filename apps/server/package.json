@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "echo 'build handled by @vercel/node'"
+    "build": "echo 'build handled by @vercel/node'",
+    "create-test-invite": "tsx src/create-test-invite.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
