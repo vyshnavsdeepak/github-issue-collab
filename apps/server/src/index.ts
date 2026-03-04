@@ -11,9 +11,14 @@ import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardL
 import { handleMcp, handleInvite, handleInviteOAuthCallback } from './mcp'
 import multer from 'multer'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
+import { handleWebhook } from './webhook'
 
 const app = express()
-app.use(express.json())
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = buf
+  },
+}))
 app.use(express.urlencoded({ extended: false }))
 app.use(express.static(join(__dirname, '../public')))
 
@@ -35,6 +40,10 @@ const TokenRequest = z.object({
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+app.post('/webhook', (req, res) => {
+  void handleWebhook(req, res)
 })
 
 app.get('/connect', (req, res) => {
@@ -203,6 +212,7 @@ if (!process.env.VERCEL) {
     console.log(`  GET  /invite/oauth/callback`)
     console.log(`  POST /mcp   (hosted MCP)`)
     console.log(`  POST /token (installation token broker)`)
+    console.log(`  POST /webhook (GitHub webhook — set GITHUB_WEBHOOK_SECRET)`)
     void seedDemoInviteIfNeeded()
   })
 } else {
