@@ -63,6 +63,24 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('Failed:', err instanceof Error ? err.message : String(err))
+  const msg = err instanceof Error ? err.message : String(err)
+  if (msg.includes('POSTGRES_URL is not set')) {
+    console.error(`
+Error: POSTGRES_URL is not set.
+
+To fix this, add it to apps/server/.env.local:
+
+  POSTGRES_URL=postgres://...
+
+Where to get the value:
+  • Neon dashboard → your project → Connection string
+  • Or run: vercel env pull apps/server/.env.local
+    (requires Vercel project access)
+
+See apps/server/.env.example for all required variables.
+`)
+  } else {
+    console.error('Failed:', msg)
+  }
   process.exit(1)
 })
