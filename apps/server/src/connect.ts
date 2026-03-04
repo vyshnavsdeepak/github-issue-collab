@@ -147,17 +147,22 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   const appId = process.env.GITHUB_APP_ID
   let privateKey: string | null = null
-  try { privateKey = loadPrivateKey() } catch { /* skip issues if key missing */ }
+  try { privateKey = loadPrivateKey() } catch { /* skip if key missing */ }
 
   let issues: Issue[] = []
-  if (appId && privateKey && user.repo) {
-    const [owner, repo] = user.repo.split('/')
+  let installationRepos: Array<{ full_name: string }> = []
+  if (appId && privateKey && user.installation_id) {
     try {
-      const token = await getInstallationToken(user.installation_id, appId, privateKey)
-      issues = await listIssues({ owner, repo, token, state: 'open', per_page: 25 })
-      // GitHub's issues endpoint includes PRs; filter them out
-      issues = issues.filter(i => !(i as unknown as { pull_request?: unknown }).pull_request)
-    } catch { /* non-fatal */ }
+      installationRepos = await getInstallationRepos(user.installation_id, appId, privateKey)
+    } catch { /* degrade gracefully */ }
+    if (user.repo) {
+      const [owner, repo] = user.repo.split('/')
+      try {
+        const token = await getInstallationToken(user.installation_id, appId, privateKey)
+        issues = await listIssues({ owner, repo, token, state: 'open', per_page: 25 })
+        issues = issues.filter(i => !(i as unknown as { pull_request?: unknown }).pull_request)
+      } catch { /* non-fatal */ }
+    }
   }
 
   const [sessions, invites] = await Promise.all([
@@ -316,6 +321,23 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     </div>
   </section>
 
+  <!-- REPOSITORIES -->
+  ${installationRepos.length > 0 ? `<section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">Repositories</h3>
+    <div class="border-2 border-black">
+      ${installationRepos.map((r, i) => {
+        const isActive = r.full_name === user.repo
+        return `<div class="${i > 0 ? 'border-t-2 border-black ' : ''}flex items-center justify-between px-4 py-3 ${isActive ? 'bg-black text-white' : ''}">
+          <span class="font-mono text-sm">${esc(r.full_name)}</span>
+          <span class="text-xs ml-4 shrink-0">${isActive
+            ? '<span class="border-2 border-white px-2 py-0.5">active</span>'
+            : `<form method="POST" action="/dashboard/set-repo" class="inline"><input type="hidden" name="repo" value="${esc(r.full_name)}"><button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Use this repo</button></form>`
+          }</span>
+        </div>`
+      }).join('')}
+    </div>
+  </section>` : ''}
+
   <!-- MCP CONFIG -->
   <section class="border-b-4 border-black px-6 py-6">
     <h3 class="font-bold text-lg mb-4">MCP Config</h3>
@@ -454,6 +476,45 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
   if (!user) { res.status(401).send('Invalid session'); return }
 
   await revokeDesignerSession(sessionId)
+  res.redirect('/dashboard')
+}
+
+export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const repo = body['repo'] as string | undefined
+  if (!repo) { res.status(400).send('Missing repo'); return }
+
+  const appId = process.env.GITHUB_APP_ID
+  if (!appId) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+
+  let privateKey: string
+  try {
+    privateKey = loadPrivateKey()
+  } catch (err) {
+    res.status(500).send(err instanceof Error ? err.message : String(err))
+    return
+  }
+
+  let repos: Array<{ full_name: string }>
+  try {
+    repos = await getInstallationRepos(user.installation_id, appId, privateKey)
+  } catch (err) {
+    res.status(502).send(`GitHub API error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  if (!repos.some(r => r.full_name === repo)) {
+    res.status(403).send('Repo not accessible via this installation')
+    return
+  }
+
+  await updateUserRepo(user.id, repo)
   res.redirect('/dashboard')
 }
 
