@@ -90,6 +90,17 @@ export async function runMigrations(): Promise<void> {
   await db`
     ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS repo TEXT
   `
+  await db`
+    CREATE TABLE IF NOT EXISTS acknowledged_comments (
+      id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id           UUID REFERENCES users(id),
+      issue_number      INT NOT NULL,
+      github_comment_id BIGINT NOT NULL,
+      action_taken      TEXT,
+      acknowledged_at   TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, github_comment_id)
+    )
+  `
 }
 
 export interface User {
@@ -328,4 +339,28 @@ export async function getFirstUser(): Promise<User | null> {
   const db = sql()
   const rows = await db`SELECT * FROM users ORDER BY created_at ASC LIMIT 1`
   return (rows[0] as User) ?? null
+}
+
+export async function acknowledgeComment(params: {
+  userId: string
+  issueNumber: number
+  githubCommentId: number
+  actionTaken?: string
+}): Promise<void> {
+  const db = sql()
+  await db`
+    INSERT INTO acknowledged_comments (user_id, issue_number, github_comment_id, action_taken)
+    VALUES (${params.userId}, ${params.issueNumber}, ${params.githubCommentId}, ${params.actionTaken ?? null})
+    ON CONFLICT (user_id, github_comment_id) DO UPDATE
+      SET action_taken = EXCLUDED.action_taken, acknowledged_at = NOW()
+  `
+}
+
+export async function getAcknowledgedCommentIds(userId: string, issueNumber: number): Promise<number[]> {
+  const db = sql()
+  const rows = await db`
+    SELECT github_comment_id FROM acknowledged_comments
+    WHERE user_id = ${userId} AND issue_number = ${issueNumber}
+  `
+  return rows.map(r => Number((r as { github_comment_id: string | number }).github_comment_id))
 }
