@@ -50,6 +50,19 @@ function parseRolePrefix(text: string | null): { role?: string; text: string } {
   return { text }
 }
 
+const FEEDBACK_TYPES = ['QUESTION', 'FEEDBACK', 'DECISION'] as const
+type FeedbackType = (typeof FEEDBACK_TYPES)[number]
+
+function parseFeedbackType(text: string): { feedbackType?: FeedbackType; text: string } {
+  const match = text.match(/^\[(QUESTION|FEEDBACK|DECISION)\]\s*/)
+  if (match) return { feedbackType: match[1] as FeedbackType, text: text.slice(match[0].length) }
+  return { text }
+}
+
+function isValidFeedbackType(value: string): value is FeedbackType {
+  return (FEEDBACK_TYPES as readonly string[]).includes(value)
+}
+
 interface DesignerContext {
   session: db.DesignerSession
   ownerUser: db.User
@@ -243,16 +256,27 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
     `<span class="text-xs border border-gray-400 px-1">${esc(l.name)}</span>`
   ).join(' ')
 
+  const feedbackTypeBadge = (ft?: FeedbackType) => {
+    if (!ft) return ''
+    const styles: Record<FeedbackType, string> = {
+      QUESTION: 'border-blue-500 text-blue-700',
+      FEEDBACK: 'border-purple-500 text-purple-700',
+      DECISION: 'border-yellow-500 text-yellow-700',
+    }
+    return `<span class="text-xs border px-1 ${styles[ft]}">${ft.toLowerCase()}</span>`
+  }
+
   const commentItems = comments.map(c => {
-    const { text, role } = parseRolePrefix(c.body)
-    const isDecision = text.includes('## Decision')
+    const { text: roleStripped, role } = parseRolePrefix(c.body)
+    const { feedbackType, text } = parseFeedbackType(roleStripped)
+    const isDecision = feedbackType === 'DECISION' || roleStripped.includes('## Decision')
     return `
     <div class="border-2 border-black p-4 ${isDecision ? 'bg-yellow-50' : ''}">
       <div class="flex items-center justify-between mb-2">
         <div class="flex items-center gap-2">
           <span class="font-bold text-sm">${esc(c.user?.login ?? '—')}</span>
           ${roleBadge(role)}
-          ${isDecision ? '<span class="text-xs border border-yellow-500 text-yellow-700 px-1">decision</span>' : ''}
+          ${feedbackTypeBadge(feedbackType)}
         </div>
         <span class="text-xs text-gray-500">${timeAgo(c.created_at)}</span>
       </div>
@@ -297,6 +321,16 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
     ${successMsg}
     <form method="POST" action="/designer/comment" enctype="multipart/form-data" class="flex flex-col gap-3 max-w-2xl">
       <input type="hidden" name="issue_number" value="${issueNumber}">
+      <div>
+        <label class="text-xs uppercase tracking-widest block mb-1">Type <span class="text-red-500">*</span></label>
+        <select name="feedback_type" required
+          class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
+          <option value="">— select a type —</option>
+          <option value="QUESTION">Question</option>
+          <option value="FEEDBACK">Feedback</option>
+          <option value="DECISION">Decision</option>
+        </select>
+      </div>
       <textarea name="body" rows="4" required placeholder="Share your design thoughts…"
         class="border-2 border-black px-3 py-2 text-sm w-full bg-white"></textarea>
       <div>
@@ -378,9 +412,15 @@ export async function handleDesignerComment(req: Request, res: Response): Promis
   const body = req.body as Record<string, unknown>
   const issueNumber = Number(body['issue_number'])
   const commentBody = ((body['body'] as string | undefined) ?? '').trim()
+  const feedbackTypeRaw = ((body['feedback_type'] as string | undefined) ?? '').toUpperCase()
 
   if (!issueNumber || !commentBody) {
     res.status(400).send('Missing issue_number or body')
+    return
+  }
+
+  if (!isValidFeedbackType(feedbackTypeRaw)) {
+    res.status(400).send('Invalid or missing feedback_type — must be QUESTION, FEEDBACK, or DECISION')
     return
   }
 
@@ -399,7 +439,7 @@ export async function handleDesignerComment(req: Request, res: Response): Promis
       repo: ctx.repo,
       issueNumber,
       token: ctx.token,
-      body: `[Designer] ${commentBody}${imageMarkdown}`,
+      body: `[Designer] [${feedbackTypeRaw}] ${commentBody}${imageMarkdown}`,
     })
   } catch (err) {
     res.status(502).send(`GitHub error: ${err instanceof Error ? err.message : String(err)}`)
