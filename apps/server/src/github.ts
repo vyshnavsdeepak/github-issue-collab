@@ -219,6 +219,24 @@ export async function getSuggestedDesigners(params: {
   return Array.from(candidates.values()).slice(0, 10)
 }
 
+export interface RepoInfo {
+  full_name: string
+  description: string | null
+  owner: {
+    login: string
+    avatar_url: string
+  }
+}
+
+export async function getRepo(params: {
+  owner: string
+  repo: string
+  token: string
+}): Promise<RepoInfo> {
+  const { owner, repo, token } = params
+  return ghFetch<RepoInfo>(`https://api.github.com/repos/${owner}/${repo}`, token)
+}
+
 export async function getInstallationRepos(
   installationId: string,
   appId: string,
