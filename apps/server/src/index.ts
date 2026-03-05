@@ -10,7 +10,7 @@ import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createI
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
 import { handleMcp, handleInvite, handleInviteOAuthCallback } from './mcp'
 import multer from 'multer'
-import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
+import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision, handleIssueBrief } from './designer'
 
 const app = express()
 app.use(express.json())
@@ -99,6 +99,10 @@ app.post('/designer/comment', upload.array('screenshots', 5), (req, res) => {
 
 app.post('/designer/decision', (req, res) => {
   void handleDesignerDecision(req, res)
+})
+
+app.post('/api/issues/:id/brief', (req, res) => {
+  void handleIssueBrief(req, res)
 })
 
 app.post('/mcp', (req, res) => {
