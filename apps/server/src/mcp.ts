@@ -1,3 +1,4 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { randomUUID } from 'crypto'
 import type { Request, Response } from 'express'
@@ -59,6 +60,50 @@ function cacheInvalidateRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}:`
   for (const k of cache.keys()) {
     if (k.startsWith(prefix)) cache.delete(k)
+  }
+}
+
+async function generateIssueSummary(issue: {
+  title: string
+  body: string
+  comments: Array<{ role?: string; body: string; user?: { login: string } | null }>
+}): Promise<string | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return null
+
+  const thread = [
+    `Issue: ${issue.title}`,
+    `\n${issue.body || '(no description)'}`,
+    ...issue.comments.map((c) => {
+      const author = c.role ? `[${c.role}]` : (c.user?.login ?? 'unknown')
+      return `\n---\n${author}: ${c.body}`
+    }),
+  ].join('\n')
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const msg = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      messages: [
+        {
+          role: 'user',
+          content: `You are helping a designer understand a GitHub issue. Read the thread below and write a plain-English summary (3–5 sentences) covering:
+1. What decision is currently pending
+2. What context or discussion led here
+3. What specific input or feedback is needed from the designer
+
+Be concrete and direct. Do not use bullet points.
+
+---
+${thread}`,
+        },
+      ],
+    })
+    const block = msg.content[0]
+    return block && block.type === 'text' ? block.text : null
+  } catch {
+    return null
   }
 }
 
@@ -279,16 +324,34 @@ async function callTool(
         listIssueComments({ owner, repo, issueNumber, token }),
       ])
       const bodyParsed = parseRolePrefix(issue.body)
+      const enrichedComments = comments.map((c) => {
+        const parsed = parseRolePrefix(c.body)
+        return { ...c, role: parsed.role, body: parsed.text }
+      })
       const enriched = {
         ...issue,
         body_role: bodyParsed.role,
         body: bodyParsed.text,
-        comments: comments.map((c) => {
-          const parsed = parseRolePrefix(c.body)
-          return { ...c, role: parsed.role, body: parsed.text }
-        }),
+        comments: enrichedComments,
       }
-      const result = { content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }] }
+
+      const content: Array<{ type: string; text: string }> = [
+        { type: 'text', text: JSON.stringify(enriched, null, 2) },
+      ]
+
+      const isDesignerInput = issue.labels.some((l: { name: string }) => l.name === 'designer-input')
+      if (ctx.role === 'designer' && isDesignerInput) {
+        const summary = await generateIssueSummary({
+          title: issue.title,
+          body: bodyParsed.text,
+          comments: enrichedComments,
+        })
+        if (summary) {
+          content.push({ type: 'text', text: `\n## AI Summary for Designer\n\n${summary}` })
+        }
+      }
+
+      const result = { content }
       cacheSet(key, result)
       return result
     }
