@@ -311,6 +311,56 @@ pub async fn write_builder_status(config: &Config, _log_tx: &mpsc::UnboundedSend
     }
 }
 
+/// Build an AI-readable monitoring prompt that includes the actual pane log.
+/// Claude reads the log, assesses the situation, takes action, outputs JSON.
+fn build_monitor_prompt(
+    issue_num: u64,
+    worktree: &str,
+    pane_log: &str,
+    open_prs: &[u64],
+    conflict: bool,
+) -> String {
+    let pr_info = if open_prs.is_empty() {
+        "No open PRs found for this issue.".to_string()
+    } else {
+        let nums = open_prs.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+        format!("Open PR(s) for this issue: {nums}")
+    };
+    let conflict_note = if conflict {
+        " NOTE: a rebase conflict was detected on this branch."
+    } else {
+        ""
+    };
+    // Trim log to last 60 lines so the prompt stays focused
+    let log_snippet: String = pane_log
+        .lines()
+        .rev()
+        .take(60)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "You are a builder bot monitoring GitHub issue #{issue_num}. \
+        Repo: vyshnavsdeepak/github-issue-collab. \
+        Worktree: {worktree}. Branch: feature/issue-{issue_num}. \
+        {pr_info}.{conflict_note} \
+        \n\nHere is the current terminal log:\n---\n{log_snippet}\n---\n\
+        \nBased on the log above:\
+        \n1. What has this worker accomplished so far?\
+        \n2. What is blocking progress or needs attention?\
+        \n3. Take the necessary action now (use git, gh, or any shell commands).\
+        \n   - If no PR: commit uncommitted work, push, gh pr create --base main --body 'Closes #{issue_num}'\
+        \n   - If conflicts: git fetch origin && git rebase origin/main, resolve each file, git add, git rebase --continue, git push --force-with-lease origin HEAD\
+        \n   - If PR open and CI clean: output done\
+        \n   - If PR open and review needed: address the feedback\
+        \nAt the end output exactly one JSON line (no other text after it):\
+        \n{{\"issue\":{issue_num},\"status\":\"idle|working|done|conflict|stuck\",\"action_taken\":\"...\",\"pr\":null}}"
+    )
+}
+
 pub async fn monitor_windows(
     config: &Config,
     _backoff: &Arc<Mutex<BackoffState>>,
@@ -323,99 +373,64 @@ pub async fn monitor_windows(
         let pane = capture_pane(config, *idx).await;
         let state = classify_pane(&pane);
 
+        // Only probe workers that are not actively doing something
         if state == "active" {
             continue;
         }
 
-        let pr_nums = github::list_prs_for_issue(&config.repo, issue_num)
-            .await
-            .unwrap_or_default();
-        let pr_exists = !pr_nums.is_empty();
-        let target = format!("{}:{}", config.session, idx);
-
-        let worktree_path = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
-
-        // Skip if bottom pane already has an active probe
+        // Skip if a probe is already running in the bottom pane
         if bottom_pane_active(config, name).await {
             continue;
         }
 
-        if state == "claude_repl" && !pr_exists {
-            log(log_tx, format!("[monitor] Issue #{issue_num}: idle, no PR — spawning --print probe"));
-            toast(log_tx, "INFO", &format!("Probing #{issue_num}"));
-            let prompt = format!(
-                "Issue #{issue_num} has no PR yet. Check git status in this worktree. \
-                Commit any uncommitted work, push the branch, and create a PR: \
-                gh pr create --base main --body 'Closes #{issue_num}'. \
-                At the end output exactly one JSON line: \
-                {{\"issue\":{issue_num},\"action\":\"pr_created\",\"pr\":PR_NUMBER}} \
-                or {{\"issue\":{issue_num},\"action\":\"nothing\",\"reason\":\"...\"}}"
-            );
-            send_print_pane(config, name, &worktree_path, &prompt, log_tx).await;
-            let _ = github::post_comment(
-                &config.repo,
-                config.discussion_issue,
-                &format!("🔧 **Builder:** Probing issue #{issue_num} — idle with no PR."),
-            )
-            .await;
-        } else if state == "claude_repl" && pr_exists {
-            let pr = pr_nums.first().copied().unwrap_or(0);
-            log(log_tx, format!("[monitor] Issue #{issue_num}: idle, PR #{pr} — probing review status"));
-            let prompt = format!(
-                "PR #{pr} is open for issue #{issue_num}. Check its status: \
-                gh pr view {pr} --json mergeStateStatus,reviews,statusCheckRollup. \
-                If there are review comments, address them. If CI is failing, fix the failures. \
-                If everything is clean output: {{\"issue\":{issue_num},\"pr\":{pr},\"status\":\"clean\"}} \
-                or {{\"issue\":{issue_num},\"pr\":{pr},\"status\":\"needs_work\",\"reason\":\"...\"}}"
-            );
-            send_print_pane(config, name, &worktree_path, &prompt, log_tx).await;
-        } else if state == "shell" && !pr_exists {
-            let active = count_active_workers(config).await;
-            if active >= config.max_concurrent {
-                log(
-                    log_tx,
-                    format!(
-                        "[monitor] Issue #{issue_num}: queued (at capacity {active}/{})",
-                        config.max_concurrent
-                    ),
-                );
-                continue;
-            }
+        let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
 
-            let worktree = format!(
-                "{}/.claude/worktrees/issue-{issue_num}",
-                config.repo_root
-            );
-            if !std::path::Path::new(&worktree).exists() {
-                continue;
-            }
-
-            let branch = format!("feature/issue-{issue_num}");
-            let claude_prompt = format!(
-                "Continue implementing GitHub issue #{issue_num} in this repo. Check what has already been done (git log, git status, existing code). Finish the implementation, commit, push branch {branch}, and open a PR to main referencing #{issue_num}. Work autonomously."
-            );
-            let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
-            let script = format!(
-                "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
-                worktree,
-                claude_prompt.replace('\'', "'\\''")
-            );
-            if std::fs::write(&script_path, &script).is_ok() {
-                let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-                send_keys(config, &target, &script_path).await;
-            }
-
-            log(
-                log_tx,
-                format!("[monitor] Issue #{issue_num}: Claude exited without PR — relaunched"),
-            );
-            toast(log_tx, "WARNING", &format!("Relaunched #{issue_num}"));
-
-            let comment = format!(
-                "🔄 **Vyshnav (Builder):** Relaunched Claude on issue #{issue_num} — previous run exited without a PR.\n\n**— Vyshnav (simulated builder)**"
-            );
-            let _ = github::post_comment(&config.repo, config.discussion_issue, &comment).await;
+        // Shell with no worktree = nothing to do yet
+        if state == "shell" && !std::path::Path::new(&worktree).exists() {
+            continue;
         }
+
+        // Shell with no prior Claude activity = fresh window, skip
+        if state == "shell" {
+            let had_claude = pane.contains("claude") || pane.contains("feature/issue-");
+            if !had_claude {
+                // Check capacity before relaunching
+                let active = count_active_workers(config).await;
+                if active >= config.max_concurrent {
+                    log(log_tx, format!("[monitor] #{issue_num}: at capacity, skipping"));
+                    continue;
+                }
+                let branch = format!("feature/issue-{issue_num}");
+                let claude_prompt = format!(
+                    "Continue implementing GitHub issue #{issue_num}. Check git log, git status, existing code. Finish the implementation, commit, push {branch}, open a PR referencing #{issue_num}. Work autonomously."
+                );
+                let script_path = format!("/tmp/worker-issue-{issue_num}.sh");
+                let script = format!(
+                    "#!/bin/bash\nunset CLAUDECODE\ncd '{}'\nexec claude --dangerously-skip-permissions '{}'\n",
+                    worktree, claude_prompt.replace('\'', r"'\''")
+                );
+                if std::fs::write(&script_path, &script).is_ok() {
+                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                    let target = format!("{}:{}", config.session, idx);
+                    send_keys(config, &target, &script_path).await;
+                    log(log_tx, format!("[monitor] #{issue_num}: relaunched interactive Claude"));
+                    toast(log_tx, "WARNING", &format!("Relaunched #{issue_num}"));
+                }
+                continue;
+            }
+        }
+
+        // For idle (REPL) and shell-with-history workers: read the log with AI
+        let pr_nums = github::list_prs_for_issue(&config.repo, issue_num)
+            .await
+            .unwrap_or_default();
+        let conflict = has_conflict_marker(issue_num);
+
+        log(log_tx, format!("[monitor] #{issue_num}: spawning AI log-reader probe (state={state})"));
+        toast(log_tx, "INFO", &format!("Reading #{issue_num} logs…"));
+
+        let prompt = build_monitor_prompt(issue_num, &worktree, &pane, &pr_nums, conflict);
+        send_print_pane(config, name, &worktree, &prompt, log_tx).await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
@@ -533,53 +548,28 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
             continue;
         }
 
-        // Test-rebase to see if conflicts exist
-        let clean = test_rebase(&worktree, issue_num).await;
-        let pane = capture_pane(config, *idx).await;
-        let state = classify_pane(&pane);
-        let target = format!("{}:{}", config.session, idx);
-
         // Skip if probe already running
         if bottom_pane_active(config, name).await {
             continue;
         }
 
+        // Authoritative rebase check
+        let clean = test_rebase(&worktree, issue_num).await;
+        let pane = capture_pane(config, *idx).await;
+
         if !clean {
-            log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT rebasing onto main"));
+            log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT — spawning AI resolver"));
             toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
-
-            let conflict_prompt = format!(
-                "Your branch feature/issue-{issue_num} has merge conflicts with main. \
-                Resolve them: git fetch origin && git rebase origin/main — \
-                for each conflicted file fix conflict markers, git add <file>, git rebase --continue. \
-                Then push: git push --force-with-lease origin HEAD. \
-                Output JSON when done: {{\"issue\":{issue_num},\"action\":\"conflict_resolved\"}} \
-                or {{\"issue\":{issue_num},\"action\":\"conflict_failed\",\"reason\":\"...\"}}"
-            );
-
-            // Always use split-pane --print: works whether top is REPL or shell
-            send_print_pane(config, name, &worktree, &conflict_prompt, log_tx).await;
-        } else if state == "claude_repl" {
-            // test_rebase applied cleanly — push via split pane
-            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — pushing via split pane"));
-            let push_prompt = format!(
-                "PRs merged to main. Branch feature/issue-{issue_num} has been rebased. \
-                Run: git push --force-with-lease origin HEAD. \
-                Output JSON: {{\"issue\":{issue_num},\"action\":\"pushed\"}}"
-            );
-            send_print_pane(config, name, &worktree, &push_prompt, log_tx).await;
-        } else if state == "shell" {
-            if !std::path::Path::new(&worktree).exists() {
-                continue;
-            }
-            // test_rebase already applied the rebase — just push from the shell
-            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — pushing from shell"));
-            let cmd = format!(
-                "cd '{}' && git push --force-with-lease origin HEAD && echo '[rebase+push done]'",
-                worktree
-            );
-            send_keys(config, &target, &cmd).await;
+        } else {
+            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — spawning AI pusher"));
         }
+
+        // Pass pane log + rebase result to AI; it reads the context and acts
+        let pr_nums = github::list_prs_for_issue(&config.repo, issue_num)
+            .await
+            .unwrap_or_default();
+        let prompt = build_monitor_prompt(issue_num, &worktree, &pane, &pr_nums, !clean);
+        send_print_pane(config, name, &worktree, &prompt, log_tx).await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
