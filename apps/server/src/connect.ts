@@ -18,7 +18,7 @@ import {
   getFunnelForUser,
   type FunnelRow,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, getSuggestedDesigners } from './github.js'
 import type { Issue } from './github.js'
 import { errorPage } from './ui.js'
 
@@ -216,6 +216,22 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     getFunnelForUser(user.id),
   ])
 
+  let suggestions: Array<{ login: string; issueNumbers: number[] }> = []
+  if (user.repo && user.installation_id) {
+    const [owner, repo] = user.repo.split('/')
+    if (owner && repo) {
+      try {
+        const appId = process.env.GITHUB_APP_ID ?? ''
+        let privateKey = ''
+        try { privateKey = loadPrivateKey() } catch { /* skip suggestions if key unavailable */ }
+        if (appId && privateKey) {
+          const installToken = await getInstallationToken(user.installation_id, appId, privateKey)
+          suggestions = await getSuggestedDesigners({ owner, repo, token: installToken })
+        }
+      } catch { /* suggestions are non-critical; ignore errors */ }
+    }
+  }
+
   const baseUrl = getBaseUrl(req)
   const mcpUrl = `${baseUrl}/mcp`
   const hostedConfig = JSON.stringify(
@@ -392,6 +408,40 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         <tbody>${designerRows}</tbody>
       </table>
     </div>
+  </section>
+
+  <!-- SUGGESTED INVITEES -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-1">Suggested Invitees</h3>
+    <p class="text-xs text-gray-500 mb-4">GitHub users who engaged with <code>designer-input</code> issues but have no commits to this repo</p>
+    ${suggestions.length > 0 ? `
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-2 border-black">
+        <thead class="bg-black text-white">
+          <tr>
+            <th class="text-left p-3 border-r-2 border-white">GitHub Handle</th>
+            <th class="text-left p-3 border-r-2 border-white">Issues</th>
+            <th class="text-left p-3 w-28">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${suggestions.map(s => `
+          <tr class="border-t-2 border-black">
+            <td class="p-3 border-r-2 border-black font-bold">
+              <a href="https://github.com/${esc(s.login)}" target="_blank" rel="noopener">@${esc(s.login)}</a>
+            </td>
+            <td class="p-3 border-r-2 border-black text-xs text-gray-500">
+              ${s.issueNumbers.map(n => `<a href="https://github.com/${esc(user.repo ?? '')}/${n}" target="_blank" rel="noopener">#${n}</a>`).join(', ')}
+            </td>
+            <td class="p-3">
+              <form method="POST" action="/dashboard/invite" class="inline">
+                <button type="submit" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Invite →</button>
+              </form>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : `<p class="text-sm text-gray-400">No suggestions yet — users who comment on or open <code>designer-input</code>-labeled issues without committing to the repo will appear here.</p>`}
   </section>
 
   <!-- INVITES -->
