@@ -285,6 +285,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   const inviteRows = invites.length
     ? invites.map(i => {
         const url = `${getInviteBaseUrl()}/invite?code=${i.code}`
+        const msgTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${url}`
         const expired = isInviteExpired(i)
         const expiryLabel = timeUntilExpiry(i.expires_at)
         const expiryCell = expired
@@ -294,8 +295,9 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           ? `<span class="text-xs font-bold border-2 border-gray-400 px-2 py-0.5 text-gray-400">Demo — do not share</span>`
           : expired
             ? `<button onclick="resendInvite('${esc(i.code)}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Resend</button>`
-            : `<div class="flex gap-2">
-                <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
+            : `<div class="flex gap-2 flex-wrap">
+                <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy URL</button>
+                <button onclick="copyText('inv-msg-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy msg</button>
                 <button onclick="resendInvite('${esc(i.code)}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Resend</button>
                </div>`
         const recipientCell = i.recipient_label
@@ -307,6 +309,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         <td class="p-3 border-r-2 border-black">${recipientCell}</td>
         <td class="p-3 border-r-2 border-black">
           <span id="inv-${i.code}" class="font-mono text-xs${expired ? ' text-gray-400 line-through' : ''}">${esc(url)}</span>
+          <span id="inv-msg-${i.code}" class="hidden">${esc(msgTemplate)}</span>
         </td>
         <td class="p-3 border-r-2 border-black text-xs">${expiryCell}</td>
         <td class="p-3">
@@ -374,10 +377,10 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-col items-end gap-2">
         <input id="recipient-label-input" type="text" placeholder="Recipient name (optional)" class="text-xs border-2 border-black px-2 py-1 font-mono w-48 focus:outline-none" maxlength="120">
         <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
-        <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
+        <div id="invite-url-display" class="text-xs border-2 border-black p-3 max-w-lg hidden"></div>
       </div>
       <script>
         async function createInvite() {
@@ -394,7 +397,14 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
               body: JSON.stringify({ recipient_label: recipientLabel || undefined }),
             });
             const data = await res.json();
-            display.textContent = data.url;
+            display.innerHTML =
+              '<span class="font-mono break-all">' + data.url + '</span>' +
+              '<div class="mt-2 flex gap-2 flex-wrap">' +
+                '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-url-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy URL</button>' +
+                '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-msg-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy msg</button>' +
+              '</div>' +
+              '<p class="mt-2 text-xs text-gray-500 border-l-2 border-black pl-2 leading-relaxed" id="new-invite-msg-text">' + (data.message_template || '') + '</p>' +
+              '<span id="new-invite-url-text" class="hidden">' + data.url + '</span>';
             display.classList.remove('hidden');
             await navigator.clipboard.writeText(data.url).catch(() => {});
             btn.textContent = '+ New Invite Link';
@@ -402,7 +412,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
             btn.textContent = 'Error';
           }
           btn.disabled = false;
-          setTimeout(() => location.reload(), 3000);
+          setTimeout(() => location.reload(), 5000);
         }
       </script>
     </div>
@@ -541,7 +551,11 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <script>
 function copyEl(id, btn) {
   navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
-    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy URL', 2000); });
+}
+function copyText(id, btn) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
+    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy msg', 2000); });
 }
 async function resendInvite(code, btn) {
   btn.disabled = true;
@@ -553,7 +567,7 @@ async function resendInvite(code, btn) {
       body: JSON.stringify({ code }),
     });
     const data = await res.json();
-    await navigator.clipboard.writeText(data.url).catch(() => {});
+    await navigator.clipboard.writeText(data.message_template || data.url).catch(() => {});
     btn.textContent = 'Copied ✓';
   } catch (e) {
     btn.textContent = 'Error';
@@ -657,7 +671,8 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   const invite = await createInviteCode(user.id, false, undefined, recipientLabel)
   void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
-  res.json({ code: invite.code, url: inviteUrl, recipient_label: invite.recipient_label })
+  const messageTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${inviteUrl}`
+  res.json({ code: invite.code, url: inviteUrl, recipient_label: invite.recipient_label, message_template: messageTemplate })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
@@ -688,7 +703,8 @@ export async function handleResendInvite(req: Request, res: Response): Promise<v
 
   const newInvite = await resendInviteCode(oldCode, user.id)
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${newInvite.code}`
-  res.json({ code: newInvite.code, url: inviteUrl })
+  const messageTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${inviteUrl}`
+  res.json({ code: newInvite.code, url: inviteUrl, message_template: messageTemplate })
 }
 
 export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {
