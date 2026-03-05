@@ -229,6 +229,10 @@ export async function createInviteCode(userId: string, isDemo = false, ttlDays?:
   return rows[0] as InviteCode
 }
 
+export async function createBulkInviteCodes(userId: string, recipients: string[], ttlDays?: number): Promise<InviteCode[]> {
+  return Promise.all(recipients.map(r => createInviteCode(userId, false, ttlDays, r)))
+}
+
 export async function resendInviteCode(oldCode: string, userId: string): Promise<InviteCode> {
   const db = sql()
   // Mark the old code as used so it disappears from the pending list
