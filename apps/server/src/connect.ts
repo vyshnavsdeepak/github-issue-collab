@@ -21,6 +21,7 @@ import {
 import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, getSuggestedDesigners } from './github.js'
 import type { Issue } from './github.js'
 import { errorPage } from './ui.js'
+import { sendInviteEmail } from './email.js'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -381,6 +382,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
       <h3 class="font-bold text-lg">Active Designers</h3>
       <div class="flex flex-col items-end gap-2">
         <input id="recipient-label-input" type="text" placeholder="Recipient name (optional)" class="text-xs border-2 border-black px-2 py-1 font-mono w-48 focus:outline-none" maxlength="120">
+        <input id="invite-email-input" type="email" placeholder="designer@email.com (optional)" class="text-xs border-2 border-black px-2 py-1 font-mono w-56" />
         <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
         <div id="invite-url-display" class="text-xs border-2 border-black p-3 max-w-lg hidden"></div>
       </div>
@@ -390,25 +392,33 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           const display = document.getElementById('invite-url-display');
           const labelInput = document.getElementById('recipient-label-input');
           const recipientLabel = labelInput.value.trim();
+          const emailInput = document.getElementById('invite-email-input');
+          const email = emailInput.value.trim();
           btn.disabled = true;
           btn.textContent = '...';
           try {
             const res = await fetch('/dashboard/invite', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ recipient_label: recipientLabel || undefined }),
+              body: JSON.stringify({ recipient_label: recipientLabel || undefined, email: email || undefined }),
             });
             const data = await res.json();
-            display.innerHTML =
-              '<span class="font-mono break-all">' + data.url + '</span>' +
-              '<div class="mt-2 flex gap-2 flex-wrap">' +
-                '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-url-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy URL</button>' +
-                '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-msg-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy msg</button>' +
-              '</div>' +
-              '<p class="mt-2 text-xs text-gray-500 border-l-2 border-black pl-2 leading-relaxed" id="new-invite-msg-text">' + (data.message_template || '') + '</p>' +
-              '<span id="new-invite-url-text" class="hidden">' + data.url + '</span>';
+            if (email && data.emailSent) {
+              display.textContent = 'Invite sent via email!';
+            } else {
+              display.innerHTML =
+                '<span class="font-mono break-all">' + data.url + '</span>' +
+                '<div class="mt-2 flex gap-2 flex-wrap">' +
+                  '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-url-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy URL</button>' +
+                  '<button onclick="navigator.clipboard.writeText(document.getElementById(\'new-invite-msg-text\').textContent)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy msg</button>' +
+                '</div>' +
+                '<p class="mt-2 text-xs text-gray-500 border-l-2 border-black pl-2 leading-relaxed" id="new-invite-msg-text">' + (data.message_template || '') + '</p>' +
+                '<span id="new-invite-url-text" class="hidden">' + data.url + '</span>';
+            }
             display.classList.remove('hidden');
-            await navigator.clipboard.writeText(data.url).catch(() => {});
+            if (!email || !data.emailSent) {
+              await navigator.clipboard.writeText(data.url).catch(() => {});
+            }
             btn.textContent = '+ New Invite Link';
           } catch (e) {
             btn.textContent = 'Error';
@@ -673,8 +683,19 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   const invite = await createInviteCode(user.id, false, undefined, recipientLabel)
   void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
+  const email = typeof body['email'] === 'string' ? body['email'].trim() : ''
+  let emailSent = false
+  if (email) {
+    try {
+      await sendInviteEmail({ to: email, inviteUrl, developerGithubUser: user.github_user ?? 'A developer' })
+      emailSent = true
+    } catch (err) {
+      console.error('[invite] Failed to send email:', err)
+    }
+  }
+
   const messageTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${inviteUrl}`
-  res.json({ code: invite.code, url: inviteUrl, recipient_label: invite.recipient_label, message_template: messageTemplate })
+  res.json({ code: invite.code, url: inviteUrl, recipient_label: invite.recipient_label, message_template: messageTemplate, emailSent })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
