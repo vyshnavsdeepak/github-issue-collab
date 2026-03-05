@@ -1,10 +1,36 @@
 import { neon } from '@neondatabase/serverless'
 import { randomUUID } from 'crypto'
 
+const MAX_RETRIES = 3
+const BASE_DELAY_MS = 100
+
+function isTransient(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const msg = err.message
+  const status = (err as { status?: number }).status
+  return msg.includes('ECONNREFUSED') || msg.includes('503') || status === 503
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (!isTransient(err) || attempt === MAX_RETRIES - 1) throw err
+      await new Promise((r) => setTimeout(r, BASE_DELAY_MS * Math.pow(3, attempt)))
+    }
+  }
+  // unreachable but satisfies TypeScript
+  throw new Error('withRetry exhausted')
+}
+
 function sql() {
   const url = process.env.POSTGRES_URL
   if (!url) throw new Error('POSTGRES_URL is not set')
-  return neon(url)
+  const rawDb = neon(url)
+  const db = (strings: TemplateStringsArray, ...values: unknown[]) =>
+    withRetry(() => rawDb(strings, ...values))
+  return db as typeof rawDb
 }
 
 export async function runMigrations(): Promise<void> {
