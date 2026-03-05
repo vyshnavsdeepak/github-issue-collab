@@ -10,6 +10,8 @@ import {
   addComment,
   addLabel,
   removeLabel,
+  getRepo,
+  type RepoInfo,
 } from './github.js'
 import { esc, errorPage } from './ui.js'
 
@@ -21,6 +23,18 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>()
+
+// Cache for invite page repo info (keyed by invite code, TTL = 1 hour)
+const INVITE_PAGE_CACHE_TTL_MS = 60 * 60_000
+
+interface InvitePageInfo {
+  inviterLogin: string
+  avatarUrl: string
+  repoFullName: string
+  expiresAt: number
+}
+
+const invitePageCache = new Map<string, InvitePageInfo>()
 
 function cacheKey(owner: string, repo: string, toolName: string, args: Record<string, unknown>): string {
   return `${owner}/${repo}:${toolName}:${JSON.stringify(args)}`
@@ -479,8 +493,45 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
 
   const ownerUser = await db.getUserById(inviteRecord.user_id)
 
-  const inviterName = ownerUser?.github_user ?? 'a developer'
-  const repoName = ownerUser?.repo ?? 'their repository'
+  // Try to fetch GitHub profile info for the inviter, with caching
+  let inviterLogin = ownerUser?.github_user ?? 'a developer'
+  let avatarUrl: string | null = null
+  let repoFullName = ownerUser?.repo ?? 'their repository'
+
+  const cachedInvitePage = invitePageCache.get(code)
+  if (cachedInvitePage && Date.now() < cachedInvitePage.expiresAt) {
+    inviterLogin = cachedInvitePage.inviterLogin
+    avatarUrl = cachedInvitePage.avatarUrl
+    repoFullName = cachedInvitePage.repoFullName
+  } else if (ownerUser?.repo) {
+    const repoParts = ownerUser.repo.split('/')
+    if (repoParts.length === 2) {
+      const [repoOwner, repoName] = repoParts as [string, string]
+      try {
+        const appId = process.env.GITHUB_APP_ID
+        if (appId) {
+          const privateKey = loadPrivateKey()
+          const token = await getInstallationToken(ownerUser.installation_id, appId, privateKey)
+          const repoInfo: RepoInfo = await getRepo({ owner: repoOwner, repo: repoName, token })
+          inviterLogin = repoInfo.owner.login
+          avatarUrl = repoInfo.owner.avatar_url
+          repoFullName = repoInfo.full_name
+          invitePageCache.set(code, {
+            inviterLogin,
+            avatarUrl,
+            repoFullName,
+            expiresAt: Date.now() + INVITE_PAGE_CACHE_TTL_MS,
+          })
+        }
+      } catch {
+        // Fall back to DB values on any error
+      }
+    }
+  }
+
+  const avatarBlock = avatarUrl
+    ? `<img src="${esc(avatarUrl)}&s=80" alt="${esc(inviterLogin)}" width="80" height="80" class="border-4 border-white" style="border-radius:0!important">`
+    : `<div class="border-4 border-white w-20 h-20 flex items-center justify-center bg-gray-700 text-2xl font-bold">${esc(inviterLogin.charAt(0).toUpperCase())}</div>`
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -500,10 +551,15 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   </header>
   <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
     <p class="text-xs uppercase tracking-widest mb-3 text-yellow-400">Designer Invite</p>
-    <h2 class="font-bold text-4xl mb-2">You've been invited</h2>
-    <p class="text-gray-300 text-lg mt-2">
-      <strong>${inviterName}</strong> has invited you to collaborate on <strong>${repoName}</strong>
-    </p>
+    <div class="flex items-center gap-5 mb-4">
+      ${avatarBlock}
+      <div>
+        <h2 class="font-bold text-3xl mb-1">You've been invited</h2>
+        <p class="text-gray-300 text-base">
+          <strong>${esc(inviterLogin)}</strong> has invited you to give feedback on <strong>${esc(repoFullName)}</strong>
+        </p>
+      </div>
+    </div>
   </section>
   <section class="px-6 py-10">
     <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
