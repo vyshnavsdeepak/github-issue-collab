@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { getInstallationToken } from './github'
 import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
-import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
+import { handleMcp, handleInvite, handleInviteOAuthCallback } from './mcp'
 import multer from 'multer'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
 
@@ -81,8 +81,8 @@ app.get('/invite', (req, res) => {
   void handleInvite(req, res)
 })
 
-app.post('/invite/callback', (req, res) => {
-  void handleInviteCallback(req, res)
+app.get('/invite/oauth/callback', (req, res) => {
+  void handleInviteOAuthCallback(req, res)
 })
 
 app.get('/designer', (req, res) => {
@@ -200,7 +200,7 @@ if (!process.env.VERCEL) {
     console.log(`  GET  /connect`)
     console.log(`  GET  /connect/callback`)
     console.log(`  GET  /invite`)
-    console.log(`  POST /invite/callback`)
+    console.log(`  GET  /invite/oauth/callback`)
     console.log(`  POST /mcp   (hosted MCP)`)
     console.log(`  POST /token (installation token broker)`)
     void seedDemoInviteIfNeeded()

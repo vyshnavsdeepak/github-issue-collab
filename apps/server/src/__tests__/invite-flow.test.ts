@@ -7,13 +7,26 @@
  *
  * Steps exercised:
  *   1. Create an invite code via the dashboard API
- *   2. GET /invite?code=<token>  →  HTML with name form
- *   3. POST /invite/callback     →  designer session created in DB + MCP config JSON
+ *   2. GET /invite?code=<token>  →  HTML with GitHub OAuth sign-in link (no name form)
+ *   3. GET /invite/oauth/callback →  designer session created in DB + redirect to /designer
+ *   4. GET /invite/oauth/callback sets a designer_session cookie
  */
 
 import { vi, describe, it, expect, beforeAll } from 'vitest'
 import type { Express } from 'express'
 import supertest from 'supertest'
+
+// Mock GitHub API calls used by the OAuth callback
+vi.mock('../github.js', () => ({
+  getInstallationToken: () => Promise.resolve('fake-gh-token'),
+  listIssues: () => Promise.resolve([]),
+  getIssue: () => Promise.resolve(null),
+  listIssueComments: () => Promise.resolve([]),
+  addComment: () => Promise.resolve({ html_url: 'https://github.com' }),
+  addLabel: () => Promise.resolve(),
+  removeLabel: () => Promise.resolve(),
+  getAuthUser: (_token: string) => Promise.resolve({ login: 'alice' }),
+}))
 
 // ---------------------------------------------------------------------------
 // In-memory DB state — hoisted so the vi.mock factory can reference it
@@ -52,12 +65,13 @@ vi.mock('../db.js', () => ({
     return Promise.resolve()
   },
 
-  createDesignerSession: (params: { userId: string; token: string; githubUser: string }) => {
+  createDesignerSession: (params: { userId: string; token: string; githubUser: string; inviteCode?: string }) => {
     const session = {
       id: newId(),
       user_id: params.userId,
       token: params.token,
       github_user: params.githubUser,
+      invite_code: params.inviteCode ?? null,
       created_at: new Date().toISOString(),
       last_seen: null,
     }
@@ -115,6 +129,11 @@ beforeAll(async () => {
   process.env.POSTGRES_URL = 'postgres://localhost/test'
   process.env.GITHUB_PRIVATE_KEY = '-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----'
 
+  // Mock global fetch for the GitHub OAuth token exchange in /invite/oauth/callback
+  global.fetch = vi.fn().mockResolvedValue({
+    json: () => Promise.resolve({ access_token: 'fake-access-token' }),
+  } as unknown as Response)
+
   // Seed a developer user so the dashboard invite endpoint can authenticate
   testApiKey = newId()
   testUserId = newId()
@@ -153,28 +172,26 @@ describe('Designer invite flow', () => {
     inviteCode = res.body.code as string
   })
 
-  it('step 2 — GET /invite?code=<token> returns HTML with name form', async () => {
+  it('step 2 — GET /invite?code=<token> returns HTML with GitHub OAuth sign-in link', async () => {
     const res = await supertest(app).get(`/invite?code=${inviteCode}`)
 
     expect(res.status).toBe(200)
     expect(res.headers['content-type']).toMatch(/html/)
 
-    // The page must contain the name input form
-    expect(res.text).toContain('<form')
-    expect(res.text).toContain('name="name"')
-    expect(res.text).toContain(`value="${inviteCode}"`)
+    // The page must contain the GitHub OAuth sign-in link, not a name form
+    expect(res.text).toContain('Sign in with GitHub')
+    expect(res.text).toContain('github.com/login/oauth/authorize')
+    expect(res.text).not.toContain('name="name"')
     // Inviter's handle and repo should appear
     expect(res.text).toContain('testdev')
     expect(res.text).toContain('testdev/testrepo')
   })
 
-  it('step 3 — POST /invite/callback creates a designer session and redirects to /designer', async () => {
+  it('step 3 — GET /invite/oauth/callback creates a designer session and redirects to /designer', async () => {
     const res = await supertest(app)
-      .post('/invite/callback')
-      .type('form')
-      .send({ code: inviteCode, name: 'alice' })
+      .get(`/invite/oauth/callback?code=gh-oauth-code&state=${inviteCode}`)
 
-    // Callback now redirects to /designer after creating the session
+    // Callback redirects to /designer after creating the session
     expect(res.status).toBe(302)
     expect(res.headers['location']).toBe('/designer')
 
@@ -182,22 +199,20 @@ describe('Designer invite flow', () => {
     const invite = inviteCodes.get(inviteCode)
     expect(invite!['used']).toBe(true)
 
-    // A designer session must exist in the DB
+    // A designer session must exist in the DB (github_user comes from mocked getAuthUser → 'alice')
     const session = [...sessions.values()].find((s) => s['github_user'] === 'alice')
     expect(session).toBeDefined()
     expect(session!['user_id']).toBe(testUserId)
     expect(typeof session!['token']).toBe('string')
   })
 
-  it('step 4 — POST /invite/callback sets a designer_session cookie', async () => {
+  it('step 4 — GET /invite/oauth/callback sets a designer_session cookie', async () => {
     // Use a fresh invite code for this assertion
     const freshInvite = { code: newId(), user_id: testUserId, used: false, is_demo: false, created_at: new Date().toISOString() }
     inviteCodes.set(freshInvite.code, freshInvite)
 
     const res = await supertest(app)
-      .post('/invite/callback')
-      .type('form')
-      .send({ code: freshInvite.code, name: 'bob' })
+      .get(`/invite/oauth/callback?code=gh-oauth-code-2&state=${freshInvite.code}`)
 
     expect(res.status).toBe(302)
 
