@@ -90,6 +90,18 @@ export async function runMigrations(): Promise<void> {
   await db`
     ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS repo TEXT
   `
+  await db`
+    CREATE TABLE IF NOT EXISTS feedback_quality (
+      id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      github_comment_id BIGINT NOT NULL,
+      issue_number      INT NOT NULL,
+      quality_signal    TEXT NOT NULL,
+      created_at        TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+  await db`
+    CREATE UNIQUE INDEX IF NOT EXISTS feedback_quality_comment_id_idx ON feedback_quality (github_comment_id)
+  `
 }
 
 export interface User {
@@ -328,4 +340,36 @@ export async function getFirstUser(): Promise<User | null> {
   const db = sql()
   const rows = await db`SELECT * FROM users ORDER BY created_at ASC LIMIT 1`
   return (rows[0] as User) ?? null
+}
+
+export interface FeedbackQuality {
+  id: string
+  github_comment_id: number
+  issue_number: number
+  quality_signal: 'actionable' | 'needs_clarification' | 'vague'
+  created_at: string
+}
+
+export async function storeQualitySignal(params: {
+  githubCommentId: number
+  issueNumber: number
+  qualitySignal: 'actionable' | 'needs_clarification' | 'vague'
+}): Promise<void> {
+  const db = sql()
+  await db`
+    INSERT INTO feedback_quality (github_comment_id, issue_number, quality_signal)
+    VALUES (${params.githubCommentId}, ${params.issueNumber}, ${params.qualitySignal})
+    ON CONFLICT (github_comment_id) DO UPDATE SET quality_signal = EXCLUDED.quality_signal
+  `
+}
+
+export async function getQualitySignalsForIssues(issueNumbers: number[]): Promise<FeedbackQuality[]> {
+  if (issueNumbers.length === 0) return []
+  const db = sql()
+  const rows = await db`
+    SELECT * FROM feedback_quality
+    WHERE issue_number = ANY(${issueNumbers})
+    ORDER BY created_at DESC
+  `
+  return rows as FeedbackQuality[]
 }
