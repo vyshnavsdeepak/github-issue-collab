@@ -61,6 +61,9 @@ export async function runMigrations(): Promise<void> {
   await db`
     ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS recipient_label TEXT
   `
+  await db`
+    ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS repo TEXT
+  `
 }
 
 export interface User {
@@ -101,6 +104,7 @@ export interface InviteCode {
   expires_at: string | null
   opened_at: string | null
   recipient_label: string | null
+  repo: string | null
 }
 
 export async function createUser(params: {
@@ -186,14 +190,14 @@ export async function listSessionsForUser(userId: string): Promise<DesignerSessi
   return rows as DesignerSession[]
 }
 
-export async function createInviteCode(userId: string, isDemo = false, ttlDays?: number, recipientLabel?: string): Promise<InviteCode> {
+export async function createInviteCode(userId: string, isDemo = false, ttlDays?: number, recipientLabel?: string, repo?: string): Promise<InviteCode> {
   const db = sql()
   const code = randomUUID()
   const days = ttlDays ?? Number(process.env.INVITE_TTL_DAYS ?? 7)
   const label = recipientLabel?.trim() || null
   const rows = await db`
-    INSERT INTO invite_codes (code, user_id, is_demo, expires_at, recipient_label)
-    VALUES (${code}, ${userId}, ${isDemo}, NOW() + (${days} || ' days')::INTERVAL, ${label})
+    INSERT INTO invite_codes (code, user_id, is_demo, expires_at, recipient_label, repo)
+    VALUES (${code}, ${userId}, ${isDemo}, NOW() + (${days} || ' days')::INTERVAL, ${label}, ${repo ?? null})
     RETURNING *
   `
   return rows[0] as InviteCode
