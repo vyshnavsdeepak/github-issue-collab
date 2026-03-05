@@ -198,6 +198,7 @@ pub async fn merge_pr(repo: &str, pr_num: u64) -> Result<()> {
 pub async fn invoke_claude(prompt: &str) -> Result<String> {
     let out = Command::new("claude")
         .args(["--dangerously-skip-permissions", "--print", prompt])
+        .env_remove("CLAUDECODE") // prevent "nested session" error
         .output()
         .await
         .context("Failed to spawn claude")?;

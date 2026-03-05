@@ -217,7 +217,12 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
         };
 
         // Check bottom split pane (index 1) for probe activity / results
-        let (probe, status) = read_probe(session, name, status, issue_num_opt);
+        // Only for issue windows — skip plain shell windows like "zsh"
+        let (probe, status) = if issue_num_opt.is_some() {
+            read_probe(session, name, status, issue_num_opt)
+        } else {
+            (None, status)
+        };
 
         // Conflict marker overrides status
         let status = match issue_num_opt {

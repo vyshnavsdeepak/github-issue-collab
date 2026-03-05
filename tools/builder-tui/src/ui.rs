@@ -404,6 +404,7 @@ fn status_icon(status: &str) -> String {
         "posted" => "✅ posted".to_string(),
         "no-window" => "👻 no-window".to_string(),
         "conflict" => "⚠️  conflict".to_string(),
+        "probing" => "🔍 probing".to_string(),
         _ => "❓ unknown".to_string(),
     }
 }
