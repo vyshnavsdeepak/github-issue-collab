@@ -455,6 +455,79 @@ export async function handleMcp(req: Request, res: Response): Promise<void> {
 
 // Designer invite flow
 
+function mcpSetupPage(opts: { baseUrl: string; sessionToken: string; isRecopy: boolean }): string {
+  const { baseUrl, sessionToken, isRecopy } = opts
+  const mcpUrl = `${baseUrl}/mcp`
+  const hostedConfig = JSON.stringify(
+    { mcpServers: { 'github-collab': { url: mcpUrl, headers: { Authorization: `Bearer ${sessionToken}` } } } },
+    null, 2
+  )
+  const cliCommand = `claude mcp add github-collab \\\n  --transport http \\\n  --header "Authorization: Bearer ${sessionToken}" \\\n  ${mcpUrl}`
+
+  const heading = isRecopy ? 'Re-copy your MCP configuration below.' : 'You\'re in! Set up your MCP connection.'
+  const subheading = isRecopy
+    ? 'Use the same config you set up previously — copy it again into Claude Desktop or the CLI.'
+    : 'Add github-issue-collab to Claude Desktop using one of the options below, then open <a href="/designer" class="underline hover:bg-black hover:text-white">/designer</a> to start.'
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Setup — github-issue-collab</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
+    a { text-decoration: underline; }
+    a:hover { background: #000; color: #fff; }
+    pre, code { font-family: monospace; }
+  </style>
+</head>
+<body class="bg-white text-black font-mono">
+  <header class="border-b-4 border-black px-6 py-4">
+    <h1 class="font-bold text-xl">github-issue-collab</h1>
+  </header>
+
+  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
+    <p class="text-xs uppercase tracking-widest mb-3 ${isRecopy ? 'text-blue-400' : 'text-green-400'}">${isRecopy ? 'Returning Designer' : '✓ Invite Accepted'}</p>
+    <h2 class="font-bold text-3xl mb-2">${esc(heading)}</h2>
+    <p class="text-gray-300 text-sm">${subheading}</p>
+  </section>
+
+  <section class="border-b-4 border-black px-6 py-8">
+    <h3 class="font-bold text-lg mb-4">MCP Configuration</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-0 border-2 border-black">
+      <div class="border-b-2 md:border-b-0 md:border-r-2 border-black p-4">
+        <p class="text-xs text-gray-500 uppercase tracking-widest mb-2">Option A — CLI</p>
+        <div class="flex items-start gap-2">
+          <pre id="cli-cmd" class="bg-black text-white text-xs p-3 overflow-x-auto flex-1">${esc(cliCommand)}</pre>
+          <button onclick="copyEl('cli-cmd', this)" class="text-xs font-bold border-2 border-black px-2 py-1 hover:bg-black hover:text-white shrink-0">Copy</button>
+        </div>
+      </div>
+      <div class="p-4">
+        <p class="text-xs text-gray-500 uppercase tracking-widest mb-2">Option B — JSON</p>
+        <div class="flex items-start gap-2">
+          <pre id="json-config" class="bg-black text-white text-xs p-3 overflow-x-auto flex-1">${esc(hostedConfig)}</pre>
+          <button onclick="copyEl('json-config', this)" class="text-xs font-bold border-2 border-black px-2 py-1 hover:bg-black hover:text-white shrink-0">Copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="px-6 py-8">
+    <a href="/designer" class="inline-block bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black no-underline">Open Designer Portal →</a>
+  </section>
+
+  <script>
+function copyEl(id, btn) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
+    .then(() => { btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 2000); });
+}
+  </script>
+</body>
+</html>`
+}
+
 export async function handleInvite(req: Request, res: Response): Promise<void> {
   const code = req.query['code'] as string | undefined
   if (!code) {
@@ -497,11 +570,23 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   }
 
   if (inviteRecord.used) {
-    res.status(400).send(errorPage({
-      title: 'Invite already used',
-      message: 'This invite link has already been accepted. Each invite link can only be used once.',
-      hint: 'Ask the developer who invited you to generate a new invite link for you.',
-    }))
+    // Designer is revisiting an already-accepted invite — show their MCP config again
+    let session: Awaited<ReturnType<typeof db.getDesignerSessionByInviteCode>>
+    try {
+      session = await db.getDesignerSessionByInviteCode(code)
+    } catch {
+      session = null
+    }
+    if (!session) {
+      res.status(400).send(errorPage({
+        title: 'Invite already used',
+        message: 'This invite link has already been accepted. Each invite link can only be used once.',
+        hint: 'Ask the developer who invited you to generate a new invite link for you.',
+      }))
+      return
+    }
+    const baseUrl = getBaseUrl(req)
+    res.send(mcpSetupPage({ baseUrl, sessionToken: session.token, isRecopy: true }))
     return
   }
 
@@ -703,7 +788,8 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
 
     const maxAge = 90 * 24 * 60 * 60
     res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
-    res.redirect('/designer')
+    const baseUrl = getBaseUrl(req)
+    res.send(mcpSetupPage({ baseUrl, sessionToken, isRecopy: false }))
   } catch (err) {
     res.status(500).send(`Error: ${err instanceof Error ? err.message : String(err)}`)
   }

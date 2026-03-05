@@ -203,6 +203,12 @@ export async function getDesignerSessionByToken(token: string): Promise<Designer
   return (rows[0] as DesignerSession) ?? null
 }
 
+export async function getDesignerSessionByInviteCode(inviteCode: string): Promise<DesignerSession | null> {
+  const db = sql()
+  const rows = await db`SELECT * FROM designer_sessions WHERE invite_code = ${inviteCode} ORDER BY created_at DESC LIMIT 1`
+  return (rows[0] as DesignerSession) ?? null
+}
+
 export async function updateDesignerLastSeen(id: string): Promise<void> {
   const db = sql()
   await db`UPDATE designer_sessions SET last_seen = NOW() WHERE id = ${id}`
