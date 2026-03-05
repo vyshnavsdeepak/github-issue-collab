@@ -10,6 +10,84 @@ import {
 } from './github.js'
 import { put } from '@vercel/blob'
 
+interface BriefData {
+  open_questions: string[]
+  decisions: string[]
+  constraints: string[]
+}
+
+const briefCache = new Map<string, { data: BriefData; expiresAt: number }>()
+
+async function generateIssueBrief(params: {
+  owner: string
+  repo: string
+  issueNumber: number
+  token: string
+}): Promise<BriefData> {
+  const cacheKey = `${params.owner}/${params.repo}#${params.issueNumber}`
+  const cached = briefCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data
+  }
+
+  const [issue, comments] = await Promise.all([
+    getIssue(params),
+    listIssueComments(params),
+  ])
+
+  const issueText = `Issue #${issue.number}: ${issue.title}\n\n${issue.body ?? ''}`
+  const commentsText = comments.map(c => `${c.user?.login ?? 'unknown'}: ${c.body}`).join('\n\n')
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
+
+  const prompt = `You are analyzing a GitHub issue thread to help a designer understand what input is needed.
+
+${issueText}
+
+Comments:
+${commentsText}
+
+Extract and return a JSON object with exactly these keys:
+- open_questions: array of specific questions that still need designer input (max 5)
+- decisions: array of design decisions already made that constrain the work (max 5)
+- constraints: array of key requirements or constraints the designer must respect (max 5)
+
+Return ONLY valid JSON, no other text.`
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Anthropic API error ${response.status}: ${text}`)
+  }
+
+  const result = await response.json() as { content: Array<{ type: string; text: string }> }
+  const text = result.content.find(c => c.type === 'text')?.text ?? ''
+
+  let data: BriefData
+  try {
+    data = JSON.parse(text) as BriefData
+  } catch {
+    throw new Error(`Failed to parse brief JSON: ${text}`)
+  }
+
+  briefCache.set(cacheKey, { data, expiresAt: Date.now() + 60 * 60 * 1000 })
+  return data
+}
+
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
     return readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8')
@@ -292,6 +370,64 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
     </div>
   </div>
 
+  <div id="brief-section" class="px-6 py-6 border-b-4 border-black bg-yellow-50">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-lg">AI Brief</h3>
+      <span class="text-xs text-gray-500 border border-gray-400 px-2 py-0.5">synthesized from thread</span>
+    </div>
+    <div id="brief-loading" class="text-sm text-gray-500">Loading brief…</div>
+    <div id="brief-content" class="hidden">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div>
+          <p class="text-xs font-bold uppercase tracking-widest mb-2 text-red-700">Open Questions</p>
+          <ul id="brief-questions" class="text-sm list-disc list-inside space-y-1 text-gray-800"></ul>
+        </div>
+        <div>
+          <p class="text-xs font-bold uppercase tracking-widest mb-2 text-blue-700">Decisions Made</p>
+          <ul id="brief-decisions" class="text-sm list-disc list-inside space-y-1 text-gray-800"></ul>
+        </div>
+        <div>
+          <p class="text-xs font-bold uppercase tracking-widest mb-2 text-green-700">Constraints</p>
+          <ul id="brief-constraints" class="text-sm list-disc list-inside space-y-1 text-gray-800"></ul>
+        </div>
+      </div>
+    </div>
+    <div id="brief-error" class="hidden text-sm text-red-600"></div>
+    <script>
+      (function() {
+        fetch('/api/issues/${issueNumber}/brief', { method: 'POST' })
+          .then(function(r) { return r.json() })
+          .then(function(d) {
+            document.getElementById('brief-loading').classList.add('hidden')
+            if (d.error) {
+              var el = document.getElementById('brief-error')
+              el.textContent = 'Brief unavailable: ' + d.error
+              el.classList.remove('hidden')
+              return
+            }
+            function fill(id, items) {
+              var ul = document.getElementById(id)
+              ;(items || []).forEach(function(item) {
+                var li = document.createElement('li')
+                li.textContent = item
+                ul.appendChild(li)
+              })
+            }
+            fill('brief-questions', d.open_questions)
+            fill('brief-decisions', d.decisions)
+            fill('brief-constraints', d.constraints)
+            document.getElementById('brief-content').classList.remove('hidden')
+          })
+          .catch(function(err) {
+            document.getElementById('brief-loading').classList.add('hidden')
+            var el = document.getElementById('brief-error')
+            el.textContent = 'Brief unavailable: ' + err.message
+            el.classList.remove('hidden')
+          })
+      })()
+    </script>
+  </div>
+
   <div class="px-6 py-6 border-b-4 border-black">
     <h3 class="font-bold text-lg mb-4">Add a Comment</h3>
     ${successMsg}
@@ -450,4 +586,37 @@ export async function handleDesignerDecision(req: Request, res: Response): Promi
   }
 
   res.redirect(`/designer/issue/${issueNumber}?success=Decision+recorded`)
+}
+
+export async function handleIssueBrief(req: Request, res: Response): Promise<void> {
+  let ctx: DesignerContext | null
+  try {
+    ctx = await resolveDesignerContext(req)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+    return
+  }
+
+  if (!ctx) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const issueNumber = Number(req.params['id'])
+  if (!issueNumber) {
+    res.status(400).json({ error: 'Invalid issue number' })
+    return
+  }
+
+  try {
+    const brief = await generateIssueBrief({
+      owner: ctx.owner,
+      repo: ctx.repo,
+      issueNumber,
+      token: ctx.token,
+    })
+    res.json(brief)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 }
