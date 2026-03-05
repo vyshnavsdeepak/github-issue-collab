@@ -393,13 +393,16 @@ export async function handleDesignerComment(req: Request, res: Response): Promis
     }
   }
 
+  const designerName = ctx.session.github_user
+  const prefix = designerName ? `[Designer: ${designerName}] ` : '[Designer] '
+
   try {
     await addComment({
       owner: ctx.owner,
       repo: ctx.repo,
       issueNumber,
       token: ctx.token,
-      body: `[Designer] ${commentBody}${imageMarkdown}`,
+      body: `${prefix}${commentBody}${imageMarkdown}`,
     })
   } catch (err) {
     res.status(502).send(`GitHub error: ${err instanceof Error ? err.message : String(err)}`)
