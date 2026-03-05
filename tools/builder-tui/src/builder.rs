@@ -395,6 +395,19 @@ pub async fn run(
         log(&log_tx, "[builder] Checking and merging open PRs...");
         crate::monitor::check_and_merge_open_prs(&config, &log_tx).await;
 
+        // If a merge just happened, kick off rebase immediately and loop in 30s
+        // instead of sleeping the full builder_sleep_secs.
+        if std::path::Path::new(crate::monitor::JUST_MERGED_FILE).exists() {
+            log(
+                &log_tx,
+                "[builder] Merge detected — triggering immediate rebase...",
+            );
+            crate::monitor::notify_rebase(&config, &log_tx).await;
+            let _ = log_tx.send("__NEXT_SCAN_30__".to_string());
+            sleep(Duration::from_secs(30)).await;
+            continue;
+        }
+
         log(&log_tx, "[builder] Cleaning up orphaned worktrees...");
         crate::monitor::cleanup_orphaned_worktrees(&config, &log_tx).await;
 

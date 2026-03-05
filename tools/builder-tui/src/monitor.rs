@@ -389,6 +389,35 @@ fn build_monitor_prompt(
     )
 }
 
+fn build_review_prompt(
+    issue_num: u64,
+    pr_num: u64,
+    worktree: &str,
+    pane_log: &str,
+    review_ctx: &str,
+) -> String {
+    let log_snippet: String = pane_log
+        .lines()
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You are working on GitHub issue #{issue_num} in worktree {worktree}.\n\
+        PR #{pr_num} is BLOCKED and cannot merge. Here is the review/CI context:\n\
+        ---\n{review_ctx}\n---\n\
+        Current terminal:\n---\n{log_snippet}\n---\n\
+        Address every review comment and fix every CI failure shown above. Then:\n\
+        - git add -A && git commit -m 'Address review feedback'\n\
+        - git push --force-with-lease origin HEAD\n\
+        At the end output exactly one JSON line:\n\
+        {{\"issue\":{issue_num},\"pr\":{pr_num},\"status\":\"working|done\",\"action_taken\":\"...\"}}"
+    )
+}
+
 pub async fn monitor_windows(
     config: &Config,
     _backoff: &Arc<Mutex<BackoffState>>,
@@ -529,6 +558,7 @@ pub async fn cleanup_finished(config: &Config, log_tx: &mpsc::UnboundedSender<St
 }
 
 const REBASE_CHECK_FILE: &str = "/tmp/builder-last-merge-check.txt";
+pub const JUST_MERGED_FILE: &str = "/tmp/builder-just-merged.txt";
 
 /// Returns true if the worktree branch rebases cleanly onto origin/main.
 /// If there are conflicts, runs `git rebase --abort` to restore the worktree
@@ -574,12 +604,19 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     let now_ts = unix_to_iso8601(now_unix());
     let _ = std::fs::write(REBASE_CHECK_FILE, &now_ts);
 
+    // Check if we just merged a PR this cycle (bypass merged_prs_since API lag)
+    let force_rebase = std::path::Path::new(JUST_MERGED_FILE).exists();
+    if force_rebase {
+        let _ = std::fs::remove_file(JUST_MERGED_FILE);
+        log(log_tx, "[rebase] Force rebase triggered after merge");
+    }
+
     let merged = github::merged_prs_since(&config.repo, &last_check)
         .await
         .unwrap_or_default();
 
-    let new_merges = !merged.is_empty();
-    if new_merges {
+    let new_merges = !merged.is_empty() || force_rebase;
+    if !merged.is_empty() {
         let merged_count = merged.len();
         let merged_titles: Vec<String> = merged.iter().map(|(n, t)| format!("#{n} {t}")).collect();
         log(
@@ -663,21 +700,24 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     }
 }
 
-/// Check all open PRs: merge CLEAN ones, rebase BEHIND ones, log DIRTY/BLOCKED.
+/// Check all open PRs. Merges are serialized: one CLEAN merge per call, one
+/// BEHIND rebase+merge per call. DIRTY and BLOCKED get probes (no early exit).
 pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
-    let prs = github::list_open_prs(&config.repo)
+    let mut prs = github::list_open_prs(&config.repo)
         .await
         .unwrap_or_default();
     if prs.is_empty() {
         return;
     }
 
+    // Oldest PR first — deterministic ordering reduces conflict surface
+    prs.sort_by_key(|(n, _)| *n);
+
     log(
         log_tx,
-        format!("[merge] Checking {} open PR(s)...", prs.len()),
+        format!("[merge] Checking {} open PR(s) (serial mode)...", prs.len()),
     );
 
-    // Ensure we have latest main refs
     let _ = tokio::process::Command::new("git")
         .args([
             "-C",
@@ -690,135 +730,173 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
         .output()
         .await;
 
+    // Collect PR states upfront (one pass)
+    let mut pr_states: Vec<(u64, String, String)> = Vec::new();
     for (pr_num, head_branch) in &prs {
-        let info = match github::get_pr_info(&config.repo, *pr_num).await {
-            Ok(i) => i,
-            Err(e) => {
-                log(
-                    log_tx,
-                    format!("[merge] PR #{pr_num}: failed to get state: {e}"),
-                );
-                continue;
-            }
-        };
+        match github::get_pr_info(&config.repo, *pr_num).await {
+            Ok(info) => pr_states.push((*pr_num, head_branch.clone(), info.merge_state)),
+            Err(e) => log(
+                log_tx,
+                format!("[merge] PR #{pr_num}: failed to get state: {e}"),
+            ),
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
 
-        // Derive issue number from branch name e.g. "feature/issue-42"
+    // ── Step 1: Merge the oldest CLEAN PR and stop ───────────────────────────
+    for (pr_num, _, state) in &pr_states {
+        if state == "CLEAN" {
+            log(
+                log_tx,
+                format!("[merge] PR #{pr_num} is CLEAN — merging (oldest first)"),
+            );
+            toast(log_tx, "INFO", &format!("Auto-merging PR #{pr_num}"));
+            match github::merge_pr(&config.repo, *pr_num).await {
+                Ok(()) => {
+                    log(log_tx, format!("[merge] PR #{pr_num} merged"));
+                    toast(log_tx, "SUCCESS", &format!("Merged PR #{pr_num}!"));
+                    // Signal builder loop to rebase immediately and loop in 30s
+                    let _ = std::fs::write(JUST_MERGED_FILE, pr_num.to_string());
+                }
+                Err(e) => {
+                    log(log_tx, format!("[merge] PR #{pr_num} merge failed: {e}"));
+                    toast(log_tx, "ERROR", &format!("PR #{pr_num} merge failed"));
+                }
+            }
+            return; // one merge per cycle — prevents cascade conflicts
+        }
+    }
+
+    // ── Step 2: Handle the oldest BEHIND PR (rebase+push+poll+merge) ─────────
+    for (pr_num, head_branch, state) in &pr_states {
+        if state != "BEHIND" {
+            continue;
+        }
+        log(
+            log_tx,
+            format!("[merge] PR #{pr_num} is BEHIND — rebasing (oldest first)"),
+        );
+        let Some(n) = head_branch
+            .strip_prefix("feature/issue-")
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
+        if !std::path::Path::new(&worktree).exists() {
+            continue;
+        }
+        let clean = test_rebase(&worktree, n).await;
+        if clean {
+            let push = tokio::process::Command::new("git")
+                .args([
+                    "-C",
+                    &worktree,
+                    "push",
+                    "--force-with-lease",
+                    "origin",
+                    "HEAD",
+                ])
+                .output()
+                .await;
+            match push {
+                Ok(o) if o.status.success() => {
+                    log(
+                        log_tx,
+                        format!("[merge] PR #{pr_num}: rebased+pushed — polling for CLEAN"),
+                    );
+                    toast(log_tx, "INFO", &format!("PR #{pr_num} rebased+pushed"));
+                    let _ = std::fs::remove_file(format!("/tmp/worker-issue-{n}-conflict.txt"));
+                    'poll: for attempt in 0u8..3 {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        if let Ok(fresh) = github::get_pr_info(&config.repo, *pr_num).await {
+                            match fresh.merge_state.as_str() {
+                                "CLEAN" => {
+                                    match github::merge_pr(&config.repo, *pr_num).await {
+                                        Ok(()) => {
+                                            log(
+                                                log_tx,
+                                                format!("[merge] PR #{pr_num} merged after rebase"),
+                                            );
+                                            toast(
+                                                log_tx,
+                                                "SUCCESS",
+                                                &format!("Merged PR #{pr_num}!"),
+                                            );
+                                            let _ = std::fs::write(
+                                                JUST_MERGED_FILE,
+                                                pr_num.to_string(),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            log(
+                                                log_tx,
+                                                format!("[merge] PR #{pr_num} merge failed: {e}"),
+                                            );
+                                            toast(
+                                                log_tx,
+                                                "ERROR",
+                                                &format!("PR #{pr_num} merge failed"),
+                                            );
+                                        }
+                                    }
+                                    break 'poll;
+                                }
+                                s if attempt < 2 => {
+                                    log(log_tx, format!("[merge] PR #{pr_num}: state={s} (attempt {}), retrying...", attempt + 1));
+                                }
+                                s => {
+                                    log(
+                                        log_tx,
+                                        format!("[merge] PR #{pr_num}: not CLEAN ({s}) after 30s"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    let windows = list_windows(config).await;
+                    for (idx, name) in &windows {
+                        if extract_issue_num(name) == Some(n) {
+                            let pane = capture_pane(config, *idx).await;
+                            let target = format!("{}:{}", config.session, idx);
+                            match classify_pane(&pane) {
+                                "shell" => {
+                                    send_keys(
+                                        config,
+                                        &target,
+                                        &format!(
+                                            "cd '{}' && git push --force-with-lease origin HEAD",
+                                            worktree
+                                        ),
+                                    )
+                                    .await
+                                }
+                                "claude_repl" => send_keys(
+                                    config,
+                                    &target,
+                                    "Branch rebased — run: git push --force-with-lease origin HEAD",
+                                )
+                                .await,
+                                _ => {}
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return; // one BEHIND handled per cycle
+    }
+
+    // ── Step 3: DIRTY probes + BLOCKED reviews (all, no early exit) ──────────
+    for (pr_num, head_branch, state) in &pr_states {
         let issue_num: Option<u64> = head_branch
             .strip_prefix("feature/issue-")
             .and_then(|s| s.parse().ok());
 
-        match info.merge_state.as_str() {
-            "CLEAN" => {
-                log(log_tx, format!("[merge] PR #{pr_num} is CLEAN — merging"));
-                toast(log_tx, "INFO", &format!("Auto-merging PR #{pr_num}"));
-                match github::merge_pr(&config.repo, *pr_num).await {
-                    Ok(()) => {
-                        log(log_tx, format!("[merge] PR #{pr_num} merged successfully"));
-                        toast(log_tx, "SUCCESS", &format!("Merged PR #{pr_num}!"));
-                    }
-                    Err(e) => {
-                        log(log_tx, format!("[merge] PR #{pr_num} merge failed: {e}"));
-                        toast(log_tx, "ERROR", &format!("PR #{pr_num} merge failed"));
-                    }
-                }
-            }
-            "BEHIND" => {
-                log(
-                    log_tx,
-                    format!("[merge] PR #{pr_num} is BEHIND main — rebasing"),
-                );
-                if let Some(n) = issue_num {
-                    let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
-                    if std::path::Path::new(&worktree).exists() {
-                        let clean = test_rebase(&worktree, n).await;
-                        if clean {
-                            // Rebase applied by test_rebase — push directly
-                            let push = tokio::process::Command::new("git")
-                                .args([
-                                    "-C",
-                                    &worktree,
-                                    "push",
-                                    "--force-with-lease",
-                                    "origin",
-                                    "HEAD",
-                                ])
-                                .output()
-                                .await;
-                            match push {
-                                Ok(o) if o.status.success() => {
-                                    log(log_tx, format!("[merge] PR #{pr_num}: rebased+pushed — polling for CLEAN state"));
-                                    toast(log_tx, "INFO", &format!("PR #{pr_num} rebased+pushed"));
-                                    // Clear stale conflict marker written by test_rebase
-                                    let _ = std::fs::remove_file(format!(
-                                        "/tmp/worker-issue-{n}-conflict.txt"
-                                    ));
-                                    // Poll up to 3×10s for GitHub to update merge state, then merge
-                                    'poll: for attempt in 0u8..3 {
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(10))
-                                            .await;
-                                        if let Ok(fresh) =
-                                            github::get_pr_info(&config.repo, *pr_num).await
-                                        {
-                                            match fresh.merge_state.as_str() {
-                                                "CLEAN" => {
-                                                    match github::merge_pr(&config.repo, *pr_num)
-                                                        .await
-                                                    {
-                                                        Ok(()) => {
-                                                            log(log_tx, format!("[merge] PR #{pr_num} merged after rebase"));
-                                                            toast(
-                                                                log_tx,
-                                                                "SUCCESS",
-                                                                &format!("Merged PR #{pr_num}!"),
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            log(log_tx, format!("[merge] PR #{pr_num} merge failed: {e}"));
-                                                            toast(
-                                                                log_tx,
-                                                                "ERROR",
-                                                                &format!(
-                                                                    "PR #{pr_num} merge failed"
-                                                                ),
-                                                            );
-                                                        }
-                                                    }
-                                                    break 'poll;
-                                                }
-                                                state if attempt < 2 => {
-                                                    log(log_tx, format!("[merge] PR #{pr_num}: state={state} after push (attempt {}), retrying...", attempt + 1));
-                                                }
-                                                state => {
-                                                    log(log_tx, format!("[merge] PR #{pr_num}: not CLEAN ({state}) after 30s, will retry next cycle"));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    // Fall back to sending command to the tmux window
-                                    let windows = list_windows(config).await;
-                                    for (idx, name) in &windows {
-                                        if extract_issue_num(name) == Some(n) {
-                                            let pane = capture_pane(config, *idx).await;
-                                            let state = classify_pane(&pane);
-                                            let target = format!("{}:{}", config.session, idx);
-                                            if state == "shell" {
-                                                let cmd = format!("cd '{}' && git push --force-with-lease origin HEAD", worktree);
-                                                send_keys(config, &target, &cmd).await;
-                                            } else if state == "claude_repl" {
-                                                send_keys(config, &target, "Branch rebased — run: git push --force-with-lease origin HEAD").await;
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // If !clean: conflict marker written by test_rebase, poller surfaces it
-                    }
-                }
-            }
+        match state.as_str() {
             "DIRTY" => {
                 log(
                     log_tx,
@@ -857,9 +935,60 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
             "BLOCKED" => {
                 log(
                     log_tx,
-                    format!("[merge] PR #{pr_num} is BLOCKED (failing CI or awaiting review)"),
+                    format!("[review] PR #{pr_num} is BLOCKED — checking review context"),
                 );
+                if let Some(n) = issue_num {
+                    // Avoid re-reviewing same PR within 20 minutes
+                    let review_file = format!("/tmp/builder-review-{n}.txt");
+                    let reviewed_recently = std::fs::metadata(&review_file)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| t.elapsed().unwrap_or_default().as_secs() < 1200)
+                        .unwrap_or(false);
+                    if reviewed_recently {
+                        log(
+                            log_tx,
+                            format!("[review] PR #{pr_num} — reviewed recently, skipping"),
+                        );
+                    } else {
+                        let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
+                        let name = format!("issue-{n}");
+                        if std::path::Path::new(&worktree).exists()
+                            && !bottom_pane_active(config, &name).await
+                        {
+                            match github::get_pr_review_context(&config.repo, *pr_num).await {
+                                Ok(review_ctx) => {
+                                    let _ = std::fs::write(&review_file, &review_ctx);
+                                    let pane = {
+                                        let windows = list_windows(config).await;
+                                        match windows
+                                            .iter()
+                                            .find(|(_, w)| extract_issue_num(w) == Some(n))
+                                        {
+                                            Some((idx, _)) => capture_pane(config, *idx).await,
+                                            None => String::new(),
+                                        }
+                                    };
+                                    let prompt = build_review_prompt(
+                                        n,
+                                        *pr_num,
+                                        &worktree,
+                                        &pane,
+                                        &review_ctx,
+                                    );
+                                    send_print_pane(config, &name, &worktree, &prompt, log_tx)
+                                        .await;
+                                    toast(log_tx, "INFO", &format!("Sent review notes to #{n}"));
+                                }
+                                Err(e) => {
+                                    log(log_tx, format!("[review] PR #{pr_num}: failed to get review context: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            "CLEAN" | "BEHIND" => {} // handled above
             other => {
                 log(
                     log_tx,
@@ -867,7 +996,6 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                 );
             }
         }
-
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }

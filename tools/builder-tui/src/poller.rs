@@ -297,24 +297,33 @@ fn read_probe(
         return (None, status);
     }
 
-    // Capture bottom pane content
     let target = format!("{session}:{window_name}.1");
+
+    // Ask tmux what program the pane is running — shell means probe is done.
+    let current_cmd = std::process::Command::new("/opt/homebrew/bin/tmux")
+        .args([
+            "display-message",
+            "-t",
+            &target,
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let probe_running = !matches!(current_cmd.as_str(), "zsh" | "bash" | "sh" | "fish" | "");
+
+    if probe_running {
+        return (Some("running".to_string()), "probing".to_string());
+    }
+
+    // Probe finished — capture content to parse JSON result
     let content = std::process::Command::new("/opt/homebrew/bin/tmux")
-        .args(["capture-pane", "-t", &target, "-p"])
+        .args(["capture-pane", "-t", &target, "-p", "-S", "-200"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
-
-    // Is the probe still running? (no shell prompt at the bottom yet)
-    let finished = content.lines().rev().take(3).any(|l| {
-        let t = l.trim();
-        t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
-    });
-
-    if !finished {
-        // Probe actively running — override status to "probing"
-        return (Some("running".to_string()), "probing".to_string());
-    }
 
     // Probe finished — try to parse JSON from output
     let json_action = crate::monitor::parse_print_json(&content).and_then(|v| {

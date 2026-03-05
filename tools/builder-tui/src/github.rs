@@ -225,6 +225,32 @@ pub async fn merge_pr(repo: &str, pr_num: u64) -> Result<()> {
     Ok(())
 }
 
+/// Fetch review comments, unresolved threads, and CI check status for a BLOCKED PR.
+pub async fn get_pr_review_context(repo: &str, pr_num: u64) -> Result<String> {
+    let num = pr_num.to_string();
+    let jq = r#""URL: " + .url +
+        "\n\nReviews (" + (.reviews | length | tostring) + "):\n" +
+        (.reviews | map("  [" + .state + "] " + .author.login + ": " + (.body // "(no comment)")) | join("\n")) +
+        "\n\nUnresolved threads:\n" +
+        ([.reviewThreads[] | select(.isResolved == false) | .comments[0] | "  " + .author.login + ": " + .body] | join("\n")) +
+        "\n\nCI checks (non-passing):\n" +
+        (.statusCheckRollup | map(select(.conclusion != "SUCCESS" and .conclusion != null and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED")) | map("  " + .name + ": " + .conclusion) | join("\n"))"#;
+    let view = run_gh(&[
+        "pr",
+        "view",
+        &num,
+        "--repo",
+        repo,
+        "--json",
+        "url,reviews,reviewThreads,statusCheckRollup",
+        "-q",
+        jq,
+    ])
+    .await
+    .unwrap_or_else(|_| "(could not fetch PR details)".to_string());
+    Ok(view)
+}
+
 pub async fn invoke_claude(prompt: &str) -> Result<String> {
     let out = Command::new("claude")
         .args(["--dangerously-skip-permissions", "--print", prompt])

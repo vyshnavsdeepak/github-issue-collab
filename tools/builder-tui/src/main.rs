@@ -165,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new(
         config.session.clone(),
         config.repo_root.clone(),
+        config.repo.clone(),
         worker_rx,
         Some(log_rx),
         is_polling,
