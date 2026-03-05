@@ -74,6 +74,7 @@ vi.mock('../db.js', () => ({
     return new Date(invite['expires_at'] as string) < new Date()
   },
   resendInviteCode: () => Promise.resolve(null),
+  recordInviteEvent: () => Promise.resolve(),
   runMigrations: () => Promise.resolve(),
   countInviteCodes: () => Promise.resolve(inviteCodes.size),
   getFirstUser: () => Promise.resolve([...users.values()][0] ?? null),
