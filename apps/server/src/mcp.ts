@@ -571,6 +571,11 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     return
   }
 
+  if (db.isInviteExpired(inviteRecord)) {
+    res.status(410).send('This invite link has expired. Ask the developer to send a new one.')
+    return
+  }
+
   try {
     const sessionToken = randomUUID()
 
