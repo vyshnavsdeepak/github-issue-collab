@@ -553,6 +553,46 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     ? `<img src="${esc(avatarUrl)}&s=80" alt="${esc(inviterLogin)}" width="80" height="80" class="border-4 border-white" style="border-radius:0!important">`
     : `<div class="border-4 border-white w-20 h-20 flex items-center justify-center bg-gray-700 text-2xl font-bold">${esc(inviterLogin.charAt(0).toUpperCase())}</div>`
 
+  // Fetch designer-input issues to preview on the invite page
+  let previewIssues: Array<{ title: string; excerpt: string }> = []
+  {
+    const previewAppId = process.env.GITHUB_APP_ID
+    let previewKey: string | null = null
+    try { previewKey = loadPrivateKey() } catch { /* skip if not configured */ }
+    if (previewAppId && previewKey && ownerUser?.installation_id && ownerUser.repo) {
+      try {
+        const [owner, repo] = ownerUser.repo.split('/')
+        if (owner && repo) {
+          const token = await getInstallationToken(ownerUser.installation_id, previewAppId, previewKey)
+          const allIssues = await listIssues({ owner, repo, token, per_page: 50 })
+          previewIssues = allIssues
+            .filter(i => i.labels.some(l => l.name === 'designer-input'))
+            .map(i => {
+              const body = i.body ?? ''
+              const excerpt = body.length > 120 ? body.slice(0, 120).replace(/\s+/g, ' ').trimEnd() + '…' : body.replace(/\s+/g, ' ').trim()
+              return { title: i.title, excerpt }
+            })
+        }
+      } catch { /* non-fatal: show invite page without preview */ }
+    }
+  }
+
+  const issuePreviewRows = previewIssues.length
+    ? previewIssues.map(i => `
+      <div class="border-t-2 border-black px-4 py-3">
+        <p class="font-bold text-sm">${esc(i.title)}</p>
+        ${i.excerpt ? `<p class="text-xs text-gray-500 mt-1">${esc(i.excerpt)}</p>` : ''}
+      </div>`).join('')
+    : `<div class="border-t-2 border-black px-4 py-3 text-sm text-gray-400">No issues labeled <code>designer-input</code> found.</div>`
+
+  const issuePreviewSection = `
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-sm uppercase tracking-widest mb-3">Issues you'll have access to</h3>
+    <div class="border-2 border-black">
+      ${issuePreviewRows}
+    </div>
+  </section>`
+
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -581,10 +621,11 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
       </div>
     </div>
   </section>
+  ${issuePreviewSection}
   <section class="px-6 py-10">
     <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
     <form method="POST" action="/invite/callback" class="flex flex-col gap-4 max-w-sm">
-      <input type="hidden" name="code" value="${code}">
+      <input type="hidden" name="code" value="${esc(code)}">
       <div>
         <label class="text-xs uppercase tracking-widest block mb-2">Your name or handle</label>
         <input type="text" name="name" required placeholder="e.g. alice" class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
