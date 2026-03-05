@@ -157,8 +157,8 @@ export async function getAppInstallation(installationId: string, appId: string, 
   )
 }
 
-export async function getAuthUser(token: string): Promise<{ login: string }> {
-  return ghFetch<{ login: string }>('https://api.github.com/user', token)
+export async function getAuthUser(token: string): Promise<{ login: string; name: string | null; avatar_url: string }> {
+  return ghFetch<{ login: string; name: string | null; avatar_url: string }>('https://api.github.com/user', token)
 }
 
 export async function getSuggestedDesigners(params: {

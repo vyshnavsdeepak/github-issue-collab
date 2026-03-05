@@ -766,9 +766,13 @@ export async function handleInviteOAuthCallback(req: Request, res: Response): Pr
 
   // Get GitHub user login from the access token
   let githubLogin: string
+  let githubDisplayName: string | null = null
+  let githubAvatarUrl: string | null = null
   try {
     const ghUser = await getAuthUser(accessToken)
     githubLogin = ghUser.login
+    githubDisplayName = ghUser.name
+    githubAvatarUrl = ghUser.avatar_url
   } catch (err) {
     res.status(502).send(errorPage({
       title: 'GitHub sign-in failed',
@@ -832,7 +836,47 @@ export async function handleInviteOAuthCallback(req: Request, res: Response): Pr
 
     const maxAge = 90 * 24 * 60 * 60
     res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
-    res.redirect('/designer')
+
+    const avatarBlock = githubAvatarUrl
+      ? `<img src="${esc(githubAvatarUrl)}&s=96" alt="${esc(githubLogin)}" width="96" height="96" class="border-4 border-white" style="border-radius:0!important">`
+      : `<div class="border-4 border-white w-24 h-24 flex items-center justify-center bg-gray-700 text-3xl font-bold">${esc(githubLogin.charAt(0).toUpperCase())}</div>`
+
+    const displayName = githubDisplayName ? `<p class="text-gray-300 text-sm mt-1">${esc(githubDisplayName)}</p>` : ''
+
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Identity Confirmed — github-issue-collab</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
+    pre, code { font-family: monospace; }
+  </style>
+</head>
+<body class="bg-white text-black font-mono p-0">
+  <header class="border-b-4 border-black px-6 py-5">
+    <h1 class="font-bold text-2xl">github-issue-collab</h1>
+  </header>
+  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
+    <p class="text-xs uppercase tracking-widest mb-3 text-green-400">✓ Identity Confirmed</p>
+    <div class="flex items-center gap-5 mb-4">
+      ${avatarBlock}
+      <div>
+        <h2 class="font-bold text-3xl mb-1">Signed in as @${esc(githubLogin)}</h2>
+        ${displayName}
+      </div>
+    </div>
+    <p class="text-gray-400 text-sm mt-4">Your GitHub identity has been verified. Comments you post will be attributed to <strong>@${esc(githubLogin)}</strong>.</p>
+  </section>
+  <section class="px-6 py-10">
+    <p class="text-sm text-gray-600 mb-8">You now have designer access to the repository. You can view issues labeled <code class="bg-gray-100 px-1">designer-input</code> and post comments.</p>
+    <a href="/designer" class="inline-block bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black no-underline">
+      Continue to Designer Portal →
+    </a>
+  </section>
+</body>
+</html>`)
   } catch (err) {
     res.status(500).send(`Error: ${err instanceof Error ? err.message : String(err)}`)
   }
