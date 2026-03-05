@@ -250,9 +250,10 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         <td class="p-3 border-r-2 border-black text-center">${check(f.invite_opened)}</td>
         <td class="p-3 border-r-2 border-black text-center">${check(f.config_started)}</td>
         <td class="p-3 border-r-2 border-black text-center">${check(f.issue_viewed)}</td>
-        <td class="p-3 text-center">${check(f.comment_submitted)}</td>
+        <td class="p-3 border-r-2 border-black text-center">${check(f.comment_submitted)}</td>
+        <td class="p-3 text-center text-xs ${f.time_to_comment ? 'font-bold' : 'text-gray-300'}">${f.time_to_comment ?? '—'}</td>
       </tr>`).join('')
-    : `<tr><td colspan="7" class="p-4 text-sm text-gray-400 text-center">No invites yet — create one below</td></tr>`
+    : `<tr><td colspan="8" class="p-4 text-sm text-gray-400 text-center">No invites yet — create one below</td></tr>`
 
   const designerRows = sessions.length
     ? sessions.map(s => `
@@ -365,7 +366,8 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
             <th class="text-center p-3 border-r-2 border-white">Opened</th>
             <th class="text-center p-3 border-r-2 border-white">Config</th>
             <th class="text-center p-3 border-r-2 border-white">Issue Viewed</th>
-            <th class="text-center p-3">Comment</th>
+            <th class="text-center p-3 border-r-2 border-white">Comment</th>
+            <th class="text-center p-3">Time to Comment</th>
           </tr>
         </thead>
         <tbody>${funnelRows}</tbody>
