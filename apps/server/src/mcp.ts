@@ -120,7 +120,15 @@ async function resolveAuth(req: Request): Promise<AuthContext | null> {
     await db.updateDesignerLastSeen(session.id)
     const ownerUser = await db.getUserById(session.user_id)
     if (!ownerUser?.repo) return null
-    const [owner, repo] = ownerUser.repo.split('/')
+
+    // If the invite is scoped to a specific repo, use that; otherwise use owner's active repo
+    let repoFullName = ownerUser.repo
+    if (session.invite_code) {
+      const invite = await db.getInviteCode(session.invite_code)
+      if (invite?.repo) repoFullName = invite.repo
+    }
+
+    const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) return null
     return { role: 'designer', installationId: ownerUser.installation_id, repo: { owner, repo }, userId: session.user_id, inviteCode: session.invite_code }
   }
@@ -203,8 +211,16 @@ function getToolSchemas(role: Role) {
     })
     tools.push({
       name: 'create_invite',
-      description: 'Create a new designer invite link (developer only)',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'Create a new designer invite link (developer only). Optionally scope it to a specific repo (owner/repo format); omit to allow access to all connected repos.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: {
+            type: 'string',
+            description: 'Restrict invite to a specific repo in owner/repo format (e.g. "acme/frontend"). Omit to allow all repos.',
+          },
+        },
+      },
     })
   }
 
@@ -329,9 +345,10 @@ async function callTool(
       if (ctx.role !== 'developer') {
         throw new Error('create_invite is only available to developers')
       }
-      const invite = await db.createInviteCode(ctx.userId)
+      const scopedRepo = args['repo'] ? String(args['repo']) : undefined
+      const invite = await db.createInviteCode(ctx.userId, false, undefined, scopedRepo)
       const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
-      return { content: [{ type: 'text', text: JSON.stringify({ invite_url: inviteUrl, code: invite.code }, null, 2) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ invite_url: inviteUrl, code: invite.code, scoped_repo: invite.repo ?? 'all' }, null, 2) }] }
     }
 
     case 'label_issue': {
@@ -496,35 +513,38 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   // Try to fetch GitHub profile info for the inviter, with caching
   let inviterLogin = ownerUser?.github_user ?? 'a developer'
   let avatarUrl: string | null = null
-  let repoFullName = ownerUser?.repo ?? 'their repository'
+  let repoFullName = inviteRecord.repo ?? ownerUser?.repo ?? 'their repository'
 
   const cachedInvitePage = invitePageCache.get(code)
   if (cachedInvitePage && Date.now() < cachedInvitePage.expiresAt) {
     inviterLogin = cachedInvitePage.inviterLogin
     avatarUrl = cachedInvitePage.avatarUrl
     repoFullName = cachedInvitePage.repoFullName
-  } else if (ownerUser?.repo) {
-    const repoParts = ownerUser.repo.split('/')
-    if (repoParts.length === 2) {
-      const [repoOwner, repoName] = repoParts as [string, string]
-      try {
-        const appId = process.env.GITHUB_APP_ID
-        if (appId) {
-          const privateKey = loadPrivateKey()
-          const token = await getInstallationToken(ownerUser.installation_id, appId, privateKey)
-          const repoInfo: RepoInfo = await getRepo({ owner: repoOwner, repo: repoName, token })
-          inviterLogin = repoInfo.owner.login
-          avatarUrl = repoInfo.owner.avatar_url
-          repoFullName = repoInfo.full_name
-          invitePageCache.set(code, {
-            inviterLogin,
-            avatarUrl,
-            repoFullName,
-            expiresAt: Date.now() + INVITE_PAGE_CACHE_TTL_MS,
-          })
+  } else {
+    const lookupRepo = inviteRecord.repo ?? ownerUser?.repo
+    if (lookupRepo && ownerUser) {
+      const repoParts = lookupRepo.split('/')
+      if (repoParts.length === 2) {
+        const [repoOwner, repoName] = repoParts as [string, string]
+        try {
+          const appId = process.env.GITHUB_APP_ID
+          if (appId) {
+            const privateKey = loadPrivateKey()
+            const token = await getInstallationToken(ownerUser.installation_id, appId, privateKey)
+            const repoInfo: RepoInfo = await getRepo({ owner: repoOwner, repo: repoName, token })
+            inviterLogin = repoInfo.owner.login
+            avatarUrl = repoInfo.owner.avatar_url
+            repoFullName = repoInfo.full_name
+            invitePageCache.set(code, {
+              inviterLogin,
+              avatarUrl,
+              repoFullName,
+              expiresAt: Date.now() + INVITE_PAGE_CACHE_TTL_MS,
+            })
+          }
+        } catch {
+          // Fall back to DB values on any error
         }
-      } catch {
-        // Fall back to DB values on any error
       }
     }
   }
