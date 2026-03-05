@@ -1,5 +1,5 @@
 import { neon } from '@neondatabase/serverless'
-import { randomUUID } from 'crypto'
+import { randomUUID, createCipheriv, createDecipheriv, randomBytes } from 'crypto'
 
 const MAX_RETRIES = 3
 const BASE_DELAY_MS = 100
@@ -90,6 +90,56 @@ export async function runMigrations(): Promise<void> {
   await db`
     ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS repo TEXT
   `
+  await db`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS webhook_url TEXT
+  `
+}
+
+// ---------------------------------------------------------------------------
+// Webhook URL encryption helpers
+// ---------------------------------------------------------------------------
+
+function getEncryptionKey(): Buffer {
+  const hex = process.env.WEBHOOK_ENCRYPTION_KEY ?? ''
+  if (hex.length === 64) return Buffer.from(hex, 'hex')
+  // Fallback: derive 32 bytes from a fixed string (not secure for prod — set WEBHOOK_ENCRYPTION_KEY)
+  return Buffer.alloc(32, 0x42)
+}
+
+function encryptWebhookUrl(url: string): string {
+  const key = getEncryptionKey()
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const encrypted = Buffer.concat([cipher.update(url, 'utf8'), cipher.final()])
+  const authTag = cipher.getAuthTag()
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`
+}
+
+function decryptWebhookUrl(stored: string): string {
+  const [ivHex, authTagHex, cipherHex] = stored.split(':')
+  if (!ivHex || !authTagHex || !cipherHex) throw new Error('Invalid encrypted webhook URL format')
+  const key = getEncryptionKey()
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'))
+  decipher.setAuthTag(Buffer.from(authTagHex, 'hex'))
+  return decipher.update(Buffer.from(cipherHex, 'hex')).toString('utf8') + decipher.final('utf8')
+}
+
+export async function setUserWebhookUrl(userId: string, url: string | null): Promise<void> {
+  const db = sql()
+  const stored = url ? encryptWebhookUrl(url) : null
+  await db`UPDATE users SET webhook_url = ${stored} WHERE id = ${userId}`
+}
+
+export async function getUserWebhookUrl(userId: string): Promise<string | null> {
+  const db = sql()
+  const rows = await db`SELECT webhook_url FROM users WHERE id = ${userId} LIMIT 1`
+  const stored = (rows[0] as { webhook_url: string | null } | undefined)?.webhook_url
+  if (!stored) return null
+  try {
+    return decryptWebhookUrl(stored)
+  } catch {
+    return null
+  }
 }
 
 export interface User {
