@@ -7,8 +7,7 @@
  *
  * Steps exercised:
  *   1. Create an invite code via the dashboard API
- *   2. GET /invite?code=<token>  →  HTML with name form
- *   3. POST /invite/callback     →  designer session created in DB + MCP config JSON
+ *   2. GET /invite?code=<token>  →  session created, cookie set, redirect to /designer
  */
 
 import { vi, describe, it, expect, beforeAll } from 'vitest'
@@ -52,18 +51,21 @@ vi.mock('../db.js', () => ({
     return Promise.resolve()
   },
 
-  createDesignerSession: (params: { userId: string; token: string; githubUser: string }) => {
+  createDesignerSession: (params: { userId: string; token: string; inviteCode?: string; githubUser?: string }) => {
     const session = {
       id: newId(),
       user_id: params.userId,
       token: params.token,
-      github_user: params.githubUser,
+      github_user: params.githubUser ?? null,
+      invite_code: params.inviteCode ?? null,
       created_at: new Date().toISOString(),
       last_seen: null,
     }
     sessions.set(params.token, session)
     return Promise.resolve(session)
   },
+
+  recordInviteEvent: () => Promise.resolve(),
 
   getDesignerSessionByToken: (token: string) => Promise.resolve(sessions.get(token) ?? null),
   updateDesignerLastSeen: () => Promise.resolve(),
@@ -151,28 +153,10 @@ describe('Designer invite flow', () => {
     inviteCode = res.body.code as string
   })
 
-  it('step 2 — GET /invite?code=<token> returns HTML with name form', async () => {
+  it('step 2 — GET /invite?code=<token> creates a session, sets cookie, redirects to /designer', async () => {
     const res = await supertest(app).get(`/invite?code=${inviteCode}`)
 
-    expect(res.status).toBe(200)
-    expect(res.headers['content-type']).toMatch(/html/)
-
-    // The page must contain the name input form
-    expect(res.text).toContain('<form')
-    expect(res.text).toContain('name="name"')
-    expect(res.text).toContain(`value="${inviteCode}"`)
-    // Inviter's handle and repo should appear
-    expect(res.text).toContain('testdev')
-    expect(res.text).toContain('testdev/testrepo')
-  })
-
-  it('step 3 — POST /invite/callback creates a designer session and redirects to /designer', async () => {
-    const res = await supertest(app)
-      .post('/invite/callback')
-      .type('form')
-      .send({ code: inviteCode, name: 'alice' })
-
-    // Callback now redirects to /designer after creating the session
+    // Invite link IS the auth — no form, just redirect
     expect(res.status).toBe(302)
     expect(res.headers['location']).toBe('/designer')
 
@@ -181,23 +165,10 @@ describe('Designer invite flow', () => {
     expect(invite!['used']).toBe(true)
 
     // A designer session must exist in the DB
-    const session = [...sessions.values()].find((s) => s['github_user'] === 'alice')
+    const session = [...sessions.values()].find((s) => s['invite_code'] === inviteCode)
     expect(session).toBeDefined()
     expect(session!['user_id']).toBe(testUserId)
     expect(typeof session!['token']).toBe('string')
-  })
-
-  it('step 4 — POST /invite/callback sets a designer_session cookie', async () => {
-    // Use a fresh invite code for this assertion
-    const freshInvite = { code: newId(), user_id: testUserId, used: false, is_demo: false, created_at: new Date().toISOString() }
-    inviteCodes.set(freshInvite.code, freshInvite)
-
-    const res = await supertest(app)
-      .post('/invite/callback')
-      .type('form')
-      .send({ code: freshInvite.code, name: 'bob' })
-
-    expect(res.status).toBe(302)
 
     // A Set-Cookie header with designer_session must be present
     const setCookie = res.headers['set-cookie'] as string[] | string | undefined
