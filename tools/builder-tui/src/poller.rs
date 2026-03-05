@@ -289,7 +289,7 @@ fn read_probe(session: &str, window_name: &str, status: String, issue_num: Optio
 fn capture_pane(session: &str, window_index: usize) -> String {
     let target = format!("{}:{}", session, window_index);
     let Ok(out) = std::process::Command::new("/opt/homebrew/bin/tmux")
-        .args(["capture-pane", "-t", &target, "-p"])
+        .args(["capture-pane", "-t", &target, "-p", "-S", "-500"])
         .output()
     else {
         return String::new();

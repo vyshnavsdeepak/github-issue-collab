@@ -61,8 +61,9 @@ fn toast(tx: &mpsc::UnboundedSender<String>, level: &str, msg: &str) {
 
 async fn capture_pane(config: &Config, idx: usize) -> String {
     let target = format!("{}:{}", config.session, idx);
+    // -S -500: include last 500 lines of scrollback so AI sees the full history
     let Ok(out) = tokio::process::Command::new(&config.tmux)
-        .args(["capture-pane", "-t", &target, "-p"])
+        .args(["capture-pane", "-t", &target, "-p", "-S", "-500"])
         .output()
         .await
     else {
