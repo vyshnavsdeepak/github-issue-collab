@@ -476,108 +476,12 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
 
   void db.recordInviteEvent(code, 'invite_opened')
 
-  const ownerUser = await db.getUserById(inviteRecord.user_id)
-
-  const inviterName = ownerUser?.github_user ?? 'a developer'
-  const repoName = ownerUser?.repo ?? 'their repository'
-
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Designer Invite — github-issue-collab</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
-    pre, code { font-family: monospace; }
-    input { outline: none; }
-  </style>
-</head>
-<body class="bg-white text-black font-mono p-0">
-  <header class="border-b-4 border-black px-6 py-5">
-    <h1 class="font-bold text-2xl">github-issue-collab</h1>
-  </header>
-  <section class="border-b-4 border-black px-6 py-10 bg-black text-white">
-    <p class="text-xs uppercase tracking-widest mb-3 text-yellow-400">Designer Invite</p>
-    <h2 class="font-bold text-4xl mb-2">You've been invited</h2>
-    <p class="text-gray-300 text-lg mt-2">
-      <strong>${inviterName}</strong> has invited you to collaborate on <strong>${repoName}</strong>
-    </p>
-  </section>
-  <section class="px-6 py-10">
-    <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
-    <form method="POST" action="/invite/callback" class="flex flex-col gap-4 max-w-sm">
-      <input type="hidden" name="code" value="${code}">
-      <div>
-        <label class="text-xs uppercase tracking-widest block mb-2">Your name or handle</label>
-        <input type="text" name="name" required placeholder="e.g. alice" class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
-      </div>
-      <button type="submit" class="bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black">
-        Accept Invite →
-      </button>
-    </form>
-  </section>
-</body>
-</html>`)
-}
-
-// Handles POST from the invite landing page form (no GitHub OAuth required)
-export async function handleInviteCallback(req: Request, res: Response): Promise<void> {
-  const body = req.body as Record<string, unknown> | undefined
-  const code = body?.['code'] as string | undefined
-  const name = ((body?.['name'] as string | undefined) ?? '').trim()
-
-  if (!code || !name) {
-    res.status(400).send(errorPage({
-      title: 'Invite link is broken',
-      message: 'The invite submission was missing required information. The link may have been altered.',
-      hint: 'Ask the developer who invited you to send a new invite link.',
-    }))
-    return
-  }
-
-  let inviteRecord: Awaited<ReturnType<typeof db.getInviteCode>>
-  try {
-    inviteRecord = await db.getInviteCode(code)
-  } catch (err) {
-    res.status(500).send(errorPage({
-      title: 'Something went wrong',
-      message: 'We could not look up your invite code. Please try again in a moment.',
-      hint: 'If this keeps happening, contact the developer who invited you.',
-    }))
-    return
-  }
-
-  if (!inviteRecord) {
-    res.status(400).send(errorPage({
-      title: 'Invite not found',
-      message: 'This invite link does not match any known invite. It may have been deleted or was never valid.',
-      hint: 'Ask the developer who invited you to generate and send a new invite link.',
-    }))
-    return
-  }
-
-  if (inviteRecord.used) {
-    res.status(400).send(errorPage({
-      title: 'Invite already used',
-      message: 'This invite link has already been accepted. Each invite link can only be used once.',
-      hint: 'Ask the developer who invited you to generate a new invite link for you.',
-    }))
-    return
-  }
-
-  if (db.isInviteExpired(inviteRecord)) {
-    res.status(410).send('This invite link has expired. Ask the developer to send a new one.')
-    return
-  }
-
+  // The invite link IS the authentication — no form, no extra login step
   try {
     const sessionToken = randomUUID()
-
     await db.createDesignerSession({
       userId: inviteRecord.user_id,
       token: sessionToken,
-      githubUser: name,
       inviteCode: code,
     })
     await db.markInviteUsed(code)
