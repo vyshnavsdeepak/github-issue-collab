@@ -119,6 +119,16 @@ export interface FunnelRow {
   config_started: boolean
   issue_viewed: boolean
   comment_submitted: boolean
+  time_to_comment: string | null
+}
+
+function formatDuration(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  const remainMins = mins % 60
+  return remainMins > 0 ? `${hrs}h ${remainMins}m` : `${hrs}h`
 }
 
 export interface InviteCode {
@@ -289,14 +299,23 @@ export async function getFunnelForUser(userId: string): Promise<FunnelRow[]> {
       bool_or(ie.event_type = 'invite_opened')     AS invite_opened,
       bool_or(ie.event_type = 'config_started')    AS config_started,
       bool_or(ie.event_type = 'issue_viewed')      AS issue_viewed,
-      bool_or(ie.event_type = 'comment_submitted') AS comment_submitted
+      bool_or(ie.event_type = 'comment_submitted') AS comment_submitted,
+      EXTRACT(EPOCH FROM (
+        MIN(CASE WHEN ie.event_type = 'comment_submitted' THEN ie.created_at END) -
+        MIN(CASE WHEN ie.event_type = 'invite_generated'  THEN ie.created_at END)
+      ))::int AS time_to_comment_secs
     FROM invite_codes ic
     LEFT JOIN invite_events ie ON ie.invite_code = ic.code
     WHERE ic.user_id = ${userId}
     GROUP BY ic.code, ic.created_at
     ORDER BY ic.created_at DESC
   `
-  return rows as FunnelRow[]
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    ...r,
+    time_to_comment: r['time_to_comment_secs'] != null
+      ? formatDuration(r['time_to_comment_secs'] as number)
+      : null,
+  })) as FunnelRow[]
 }
 
 export async function countInviteCodes(): Promise<number> {
