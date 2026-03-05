@@ -298,9 +298,13 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
                 <button onclick="copyEl('inv-${i.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Copy</button>
                 <button onclick="resendInvite('${esc(i.code)}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Resend</button>
                </div>`
+        const recipientCell = i.recipient_label
+          ? `<span class="text-xs">sent to <span class="font-bold">${esc(i.recipient_label)}</span>${!expired && !i.used ? ' — pending response' : ''}</span>`
+          : `<span class="text-xs text-gray-400">—</span>`
         return `
       <tr class="border-t-2 border-black${i.is_demo ? ' opacity-50' : ''}${expired ? ' bg-red-50' : ''}">
         <td class="p-3 border-r-2 border-black font-mono text-xs text-gray-500">${i.code.slice(0, 8)}…</td>
+        <td class="p-3 border-r-2 border-black">${recipientCell}</td>
         <td class="p-3 border-r-2 border-black">
           <span id="inv-${i.code}" class="font-mono text-xs${expired ? ' text-gray-400 line-through' : ''}">${esc(url)}</span>
         </td>
@@ -310,7 +314,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         </td>
       </tr>`
       }).join('')
-    : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No pending invite links</td></tr>`
+    : `<tr><td colspan="5" class="p-4 text-sm text-gray-400 text-center">No pending invite links</td></tr>`
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -370,7 +374,8 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
   <section class="border-b-4 border-black px-6 py-6">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-lg">Active Designers</h3>
-      <div class="inline flex items-center gap-2">
+      <div class="flex items-center gap-2">
+        <input id="recipient-label-input" type="text" placeholder="Recipient name (optional)" class="text-xs border-2 border-black px-2 py-1 font-mono w-48 focus:outline-none" maxlength="120">
         <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
         <span id="invite-url-display" class="text-xs font-mono break-all hidden"></span>
       </div>
@@ -378,10 +383,16 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         async function createInvite() {
           const btn = document.getElementById('new-invite-btn');
           const display = document.getElementById('invite-url-display');
+          const labelInput = document.getElementById('recipient-label-input');
+          const recipientLabel = labelInput.value.trim();
           btn.disabled = true;
           btn.textContent = '...';
           try {
-            const res = await fetch('/dashboard/invite', { method: 'POST' });
+            const res = await fetch('/dashboard/invite', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipient_label: recipientLabel || undefined }),
+            });
             const data = await res.json();
             display.textContent = data.url;
             display.classList.remove('hidden');
@@ -452,6 +463,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
         <thead class="bg-black text-white">
           <tr>
             <th class="text-left p-3 border-r-2 border-white w-24">Code</th>
+            <th class="text-left p-3 border-r-2 border-white w-40">Recipient</th>
             <th class="text-left p-3 border-r-2 border-white">Link</th>
             <th class="text-left p-3 border-r-2 border-white w-32">Expiry</th>
             <th class="text-left p-3 w-36">Actions</th>
@@ -639,10 +651,13 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
   const user = await getUserByApiKey(apiKey)
   if (!user) { res.status(401).send('Invalid session'); return }
 
-  const invite = await createInviteCode(user.id)
+  const body = req.body as Record<string, unknown>
+  const recipientLabel = typeof body['recipient_label'] === 'string' ? body['recipient_label'] : undefined
+
+  const invite = await createInviteCode(user.id, false, undefined, recipientLabel)
   void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
-  res.json({ code: invite.code, url: inviteUrl })
+  res.json({ code: invite.code, url: inviteUrl, recipient_label: invite.recipient_label })
 }
 
 export async function handleRevokeSession(req: Request, res: Response): Promise<void> {
