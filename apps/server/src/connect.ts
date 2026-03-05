@@ -483,6 +483,104 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     </div>
   </section>
 
+  <!-- DESIGNER INPUT CANDIDATES -->
+  ${user.repo ? `<section class="border-b-4 border-black px-6 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="font-bold text-lg">Designer-Input Candidates</h3>
+        <p class="text-xs text-gray-500 mt-0.5">Open issues that may need designer review, ranked by keyword relevance</p>
+      </div>
+      <button onclick="loadCandidates()" id="load-candidates-btn" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">Scan Issues</button>
+    </div>
+    <div id="candidates-container" class="hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm border-2 border-black" id="candidates-table">
+          <thead class="bg-black text-white">
+            <tr>
+              <th class="text-left p-3 border-r-2 border-white w-16">#</th>
+              <th class="text-left p-3 border-r-2 border-white">Title / Matched Keywords</th>
+              <th class="text-left p-3 border-r-2 border-white w-16 text-center">Score</th>
+              <th class="text-left p-3 w-52">Action</th>
+            </tr>
+          </thead>
+          <tbody id="candidates-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="candidates-empty" class="hidden text-sm text-gray-400 border-2 border-gray-200 p-4">No unlabeled candidates found matching design keywords.</div>
+    <div id="candidates-error" class="hidden text-sm text-red-600 border-2 border-red-300 p-4"></div>
+    <script>
+    async function loadCandidates() {
+      const btn = document.getElementById('load-candidates-btn');
+      const container = document.getElementById('candidates-container');
+      const empty = document.getElementById('candidates-empty');
+      const errEl = document.getElementById('candidates-error');
+      const tbody = document.getElementById('candidates-body');
+      btn.disabled = true;
+      btn.textContent = 'Scanning…';
+      container.classList.add('hidden');
+      empty.classList.add('hidden');
+      errEl.classList.add('hidden');
+      try {
+        const res = await fetch('/api/issues/designer-input-candidates');
+        const data = await res.json();
+        if (!res.ok) { throw new Error(data.error || 'Request failed'); }
+        if (!data.candidates.length) {
+          empty.classList.remove('hidden');
+        } else {
+          tbody.innerHTML = data.candidates.map(c => {
+            const kws = c.matched_keywords.map(k => '<span class="text-xs border border-gray-400 px-1 mr-0.5">' + k + '</span>').join('');
+            return '<tr class="border-t-2 border-black" id="cand-row-' + c.number + '">' +
+              '<td class="p-3 border-r-2 border-black text-xs text-gray-500">' +
+                '<a href="' + c.html_url + '" target="_blank" rel="noopener" class="font-bold hover:bg-black hover:text-white no-underline">#' + c.number + '</a>' +
+              '</td>' +
+              '<td class="p-3 border-r-2 border-black">' +
+                '<a href="' + c.html_url + '" target="_blank" rel="noopener" class="font-bold hover:bg-black hover:text-white">' + escHtml(c.title) + '</a>' +
+                '<div class="mt-1 flex flex-wrap gap-0.5">' + kws + '</div>' +
+              '</td>' +
+              '<td class="p-3 border-r-2 border-black text-center font-bold text-sm">' + c.score + '</td>' +
+              '<td class="p-3">' +
+                '<button onclick="labelIssue(' + c.number + ', this)" class="text-xs font-bold bg-yellow-400 border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white">Label as designer-input</button>' +
+              '</td>' +
+            '</tr>';
+          }).join('');
+          container.classList.remove('hidden');
+        }
+        btn.textContent = 'Refresh';
+      } catch(e) {
+        errEl.textContent = 'Error: ' + e.message;
+        errEl.classList.remove('hidden');
+        btn.textContent = 'Scan Issues';
+      }
+      btn.disabled = false;
+    }
+    async function labelIssue(number, btn) {
+      btn.disabled = true;
+      btn.textContent = '…';
+      try {
+        const res = await fetch('/api/issues/label-designer-input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ issue_number: number }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        const row = document.getElementById('cand-row-' + number);
+        if (row) {
+          row.style.opacity = '0.4';
+          btn.textContent = 'Labeled ✓';
+        }
+      } catch(e) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+      }
+    }
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    </script>
+  </section>` : ''}
+
   <!-- REPOSITORIES -->
   ${installationRepos.length > 0 ? `<section class="border-b-4 border-black px-6 py-6">
     <h3 class="font-bold text-lg mb-4">Repositories</h3>

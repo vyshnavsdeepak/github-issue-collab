@@ -10,6 +10,7 @@ import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createI
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
+import { handleDesignerInputCandidates, handleLabelDesignerInput } from './candidates'
 
 const app = express()
 app.use(express.json())
@@ -96,6 +97,14 @@ app.post('/designer/comment', (req, res) => {
 
 app.post('/designer/decision', (req, res) => {
   void handleDesignerDecision(req, res)
+})
+
+app.get('/api/issues/designer-input-candidates', (req, res) => {
+  void handleDesignerInputCandidates(req, res)
+})
+
+app.post('/api/issues/label-designer-input', (req, res) => {
+  void handleLabelDesignerInput(req, res)
 })
 
 app.post('/mcp', (req, res) => {
