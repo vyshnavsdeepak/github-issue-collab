@@ -50,6 +50,16 @@ function parseRolePrefix(text: string | null): { role?: string; text: string } {
   return { text }
 }
 
+function extractDesignPrompt(text: string | null): string | null {
+  if (!text) return null
+  const match = text.match(/^\[design-prompt\]\s*(.+)$/im)
+  return match ? match[1]!.trim() : null
+}
+
+function stripDesignPrompt(text: string): string {
+  return text.replace(/^\[design-prompt\][^\n]*\n?/im, '').trimStart()
+}
+
 interface DesignerContext {
   session: db.DesignerSession
   ownerUser: db.User
@@ -233,7 +243,9 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
     return
   }
 
-  const { text: issueBody, role: issueRole } = parseRolePrefix(issue.body)
+  const { text: rawBody, role: issueRole } = parseRolePrefix(issue.body)
+  const designPrompt = extractDesignPrompt(rawBody)
+  const issueBody = designPrompt ? stripDesignPrompt(rawBody) : rawBody
 
   const roleBadge = (role?: string) => role
     ? `<span class="text-xs border px-1 ${role === 'designer' ? 'border-yellow-500 text-yellow-700' : 'border-blue-500 text-blue-700'}">${role}</span>`
@@ -275,6 +287,12 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
       </div>
     </div>
   </section>
+
+  ${designPrompt ? `
+  <div class="px-6 py-4 border-b-4 border-black bg-yellow-50">
+    <p class="text-xs uppercase tracking-widest text-yellow-700 mb-1">Design question</p>
+    <p class="font-bold text-sm">${esc(designPrompt)}</p>
+  </div>` : ''}
 
   <div class="px-6 py-6 border-b-4 border-black">
     <div class="flex items-center gap-2 mb-3">

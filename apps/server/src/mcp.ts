@@ -280,6 +280,12 @@ function parseRolePrefix(text: string | null): { role?: string; text: string } {
   return { text }
 }
 
+function extractDesignPrompt(text: string | null): string | null {
+  if (!text) return null
+  const match = text.match(/^\[design-prompt\]\s*(.+)$/im)
+  return match ? match[1]!.trim() : null
+}
+
 async function callTool(
   ctx: AuthContext,
   baseUrl: string,
@@ -328,10 +334,12 @@ async function callTool(
         const parsed = parseRolePrefix(c.body)
         return { ...c, role: parsed.role, body: parsed.text }
       })
+      const designQuestion = extractDesignPrompt(bodyParsed.text)
       const enriched = {
         ...issue,
         body_role: bodyParsed.role,
         body: bodyParsed.text,
+        design_question: designQuestion ?? undefined,
         comments: enrichedComments,
       }
 
