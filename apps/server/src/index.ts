@@ -9,12 +9,15 @@ import { getInstallationToken } from './github'
 import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
 import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
 import { handleMcp, handleInvite, handleInviteCallback } from './mcp'
+import multer from 'multer'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
 
 const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: false }))
 app.use(express.static(join(__dirname, '../public')))
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -90,7 +93,7 @@ app.get('/designer/issue/:number', (req, res) => {
   void handleDesignerIssue(req, res)
 })
 
-app.post('/designer/comment', (req, res) => {
+app.post('/designer/comment', upload.array('screenshots', 5), (req, res) => {
   void handleDesignerComment(req, res)
 })
 
