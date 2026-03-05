@@ -8,7 +8,8 @@
  * Steps exercised:
  *   1. Create an invite code via the dashboard API
  *   2. GET /invite?code=<token>  →  HTML with name form
- *   3. POST /invite/callback     →  designer session created in DB + MCP config JSON
+ *   3. POST /invite/callback     →  designer session created in DB + MCP setup page (200)
+ *   4. POST /invite/callback     →  sets designer_session cookie
  */
 
 import { vi, describe, it, expect, beforeAll } from 'vitest'
@@ -168,15 +169,15 @@ describe('Designer invite flow', () => {
     expect(res.text).toContain('testdev/testrepo')
   })
 
-  it('step 3 — POST /invite/callback creates a designer session and redirects to /designer', async () => {
+  it('step 3 — POST /invite/callback creates a designer session and shows MCP setup page', async () => {
     const res = await supertest(app)
       .post('/invite/callback')
       .type('form')
       .send({ code: inviteCode, name: 'alice' })
 
-    // Callback now redirects to /designer after creating the session
-    expect(res.status).toBe(302)
-    expect(res.headers['location']).toBe('/designer')
+    // Callback now shows MCP setup page directly (200) instead of redirecting
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toMatch(/html/)
 
     // The invite should now be marked used
     const invite = inviteCodes.get(inviteCode)
@@ -199,7 +200,7 @@ describe('Designer invite flow', () => {
       .type('form')
       .send({ code: freshInvite.code, name: 'bob' })
 
-    expect(res.status).toBe(302)
+    expect(res.status).toBe(200)
 
     // A Set-Cookie header with designer_session must be present
     const setCookie = res.headers['set-cookie'] as string[] | string | undefined
