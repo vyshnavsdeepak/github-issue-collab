@@ -12,6 +12,7 @@ import {
   removeLabel,
   getRepo,
   type RepoInfo,
+  getAuthUser,
 } from './github.js'
 import { esc, errorPage } from './ui.js'
 
@@ -593,6 +594,22 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     </div>
   </section>`
 
+  const clientId = process.env.GITHUB_APP_CLIENT_ID
+  if (!clientId) {
+    res.status(500).send(errorPage({
+      title: 'Server misconfiguration',
+      message: 'GitHub OAuth is not configured on this server.',
+      hint: 'Contact the site administrator to set GITHUB_APP_CLIENT_ID.',
+    }))
+    return
+  }
+
+  const host = req.get('host') ?? 'localhost'
+  const proto = process.env.VERCEL ? 'https' : req.protocol
+  const baseUrl = `${proto}://${host}`
+  const redirectUri = `${baseUrl}/invite/oauth/callback`
+  const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(code)}&scope=read%3Auser`
+
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -602,7 +619,6 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   <style>
     * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
     pre, code { font-family: monospace; }
-    input { outline: none; }
   </style>
 </head>
 <body class="bg-white text-black font-mono p-0">
@@ -624,39 +640,85 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
   ${issuePreviewSection}
   <section class="px-6 py-10">
     <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>
-    <form method="POST" action="/invite/callback" class="flex flex-col gap-4 max-w-sm">
-      <input type="hidden" name="code" value="${esc(code)}">
-      <div>
-        <label class="text-xs uppercase tracking-widest block mb-2">Your name or handle</label>
-        <input type="text" name="name" required placeholder="e.g. alice" class="border-2 border-black px-3 py-2 text-sm w-full bg-white font-mono">
-      </div>
-      <button type="submit" class="bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black">
-        Accept Invite →
-      </button>
-    </form>
+    <p class="text-sm text-gray-600 mb-8">Sign in with GitHub to accept — your GitHub username will be used automatically.</p>
+    <a href="${esc(oauthUrl)}" class="inline-block bg-black text-white font-bold text-sm px-6 py-3 border-2 border-black hover:bg-white hover:text-black no-underline">
+      Sign in with GitHub →
+    </a>
   </section>
 </body>
 </html>`)
 }
 
-// Handles POST from the invite landing page form (no GitHub OAuth required)
-export async function handleInviteCallback(req: Request, res: Response): Promise<void> {
-  const body = req.body as Record<string, unknown> | undefined
-  const code = body?.['code'] as string | undefined
-  const name = ((body?.['name'] as string | undefined) ?? '').trim()
+// Handles GET callback from GitHub OAuth for the designer invite flow
+export async function handleInviteOAuthCallback(req: Request, res: Response): Promise<void> {
+  const oauthCode = req.query['code'] as string | undefined
+  const inviteCode = req.query['state'] as string | undefined
 
-  if (!code || !name) {
+  if (!oauthCode || !inviteCode) {
     res.status(400).send(errorPage({
-      title: 'Invite link is broken',
-      message: 'The invite submission was missing required information. The link may have been altered.',
-      hint: 'Ask the developer who invited you to send a new invite link.',
+      title: 'OAuth callback incomplete',
+      message: 'The GitHub sign-in did not complete successfully.',
+      hint: 'Try clicking the invite link again and completing the GitHub sign-in.',
     }))
     return
   }
 
+  const clientId = process.env.GITHUB_APP_CLIENT_ID
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    res.status(500).send(errorPage({
+      title: 'Server misconfiguration',
+      message: 'GitHub OAuth credentials are not configured on this server.',
+      hint: 'Contact the site administrator.',
+    }))
+    return
+  }
+
+  // Exchange OAuth code for access token
+  let accessToken: string
+  try {
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code: oauthCode }),
+    })
+    const tokenData = await tokenRes.json() as { access_token?: string; error?: string }
+    if (!tokenData.access_token) {
+      res.status(400).send(errorPage({
+        title: 'GitHub sign-in failed',
+        message: `OAuth error: ${tokenData.error ?? 'no access_token returned'}`,
+        hint: 'Try clicking the invite link again.',
+      }))
+      return
+    }
+    accessToken = tokenData.access_token
+  } catch (err) {
+    res.status(502).send(errorPage({
+      title: 'GitHub sign-in failed',
+      message: 'Could not exchange the OAuth code for an access token.',
+      hint: 'Check your connection and try again.',
+    }))
+    return
+  }
+
+  // Get GitHub user login from the access token
+  let githubLogin: string
+  try {
+    const ghUser = await getAuthUser(accessToken)
+    githubLogin = ghUser.login
+  } catch (err) {
+    res.status(502).send(errorPage({
+      title: 'GitHub sign-in failed',
+      message: 'Could not retrieve your GitHub user information.',
+      hint: 'Try clicking the invite link again.',
+    }))
+    return
+  }
+
+  // Look up and validate the invite code (passed as OAuth state)
   let inviteRecord: Awaited<ReturnType<typeof db.getInviteCode>>
   try {
-    inviteRecord = await db.getInviteCode(code)
+    inviteRecord = await db.getInviteCode(inviteCode)
   } catch (err) {
     res.status(500).send(errorPage({
       title: 'Something went wrong',
@@ -685,7 +747,11 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
   }
 
   if (db.isInviteExpired(inviteRecord)) {
-    res.status(410).send('This invite link has expired. Ask the developer to send a new one.')
+    res.status(410).send(errorPage({
+      title: 'Invite expired',
+      message: 'This invite link has expired.',
+      hint: 'Ask the developer who invited you to generate a new invite link.',
+    }))
     return
   }
 
@@ -695,11 +761,11 @@ export async function handleInviteCallback(req: Request, res: Response): Promise
     await db.createDesignerSession({
       userId: inviteRecord.user_id,
       token: sessionToken,
-      githubUser: name,
-      inviteCode: code,
+      githubUser: githubLogin,
+      inviteCode,
     })
-    await db.markInviteUsed(code)
-    void db.recordInviteEvent(code, 'config_started')
+    await db.markInviteUsed(inviteCode)
+    void db.recordInviteEvent(inviteCode, 'config_started')
 
     const maxAge = 90 * 24 * 60 * 60
     res.setHeader('Set-Cookie', `designer_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`)
