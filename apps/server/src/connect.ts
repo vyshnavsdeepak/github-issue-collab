@@ -137,6 +137,19 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     return
   }
 
+  const appId = process.env.GITHUB_APP_ID
+  let installationRepos: Array<{ full_name: string }> = []
+  if (appId && user.installation_id) {
+    try {
+      const privateKey = loadPrivateKey()
+      installationRepos = await getInstallationRepos(user.installation_id, appId, privateKey)
+    } catch {
+      // degrade gracefully — repos section will be hidden
+    }
+  }
+
+  const switchedRepo = req.query['switched'] as string | undefined
+
   const [sessions, invites] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
@@ -214,6 +227,36 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     <h2 class="font-bold text-3xl mb-1">${esc(user.github_user ?? 'Developer')}</h2>
     <p class="text-gray-400 text-sm">${esc(user.repo ?? 'no repo configured')} &nbsp;·&nbsp; ${sessions.length} active designer${sessions.length === 1 ? '' : 's'} &nbsp;·&nbsp; ${invites.length} pending invite${invites.length === 1 ? '' : 's'}</p>
   </section>
+
+  ${switchedRepo ? `<div class="bg-green-100 border-b-4 border-green-600 px-6 py-3 flex items-center gap-3 text-sm font-bold text-green-900">
+    <span>✓ Active repo switched to <code class="font-mono bg-green-200 px-1">${esc(switchedRepo)}</code> — all MCP tools now operate on this repo.</span>
+  </div>` : ''}
+
+  <!-- REPOSITORIES -->
+  ${installationRepos.length > 0 ? `<section class="border-b-4 border-black px-6 py-6">
+    <div class="flex items-center justify-between mb-1">
+      <h3 class="font-bold text-lg">Repositories</h3>
+      <span class="text-xs text-gray-500 uppercase tracking-widest">MCP tool context</span>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">The active repo is where all MCP tools (list issues, add labels, etc.) operate. Switch by clicking "Use this repo".</p>
+    <div class="border-2 border-black">
+      ${installationRepos.map((r, i) => {
+        const isActive = r.full_name === user.repo
+        return `<div class="flex items-center justify-between px-4 py-3${i > 0 ? ' border-t-2 border-black' : ''}${isActive ? ' bg-black text-white' : ' hover:bg-gray-50'}">
+          <div class="flex items-center gap-3 min-w-0">
+            ${isActive ? '<span class="shrink-0 text-green-400 font-bold text-sm">▶</span>' : '<span class="shrink-0 text-gray-300 text-sm">○</span>'}
+            <span class="font-mono text-sm truncate">${esc(r.full_name)}</span>
+          </div>
+          <div class="shrink-0 ml-4">
+            ${isActive
+              ? '<span class="inline-flex items-center gap-1 border-2 border-green-400 text-green-400 text-xs font-bold px-2 py-0.5 uppercase tracking-widest">✓ Active</span>'
+              : `<form method="POST" action="/dashboard/set-repo" class="inline"><input type="hidden" name="repo" value="${esc(r.full_name)}"><button type="submit" class="text-xs font-bold border-2 border-black bg-white text-black px-3 py-0.5 hover:bg-black hover:text-white">Use this repo</button></form>`
+            }
+          </div>
+        </div>`
+      }).join('')}
+    </div>
+  </section>` : ''}
 
   <!-- DESIGNERS -->
   <section class="border-b-4 border-black px-6 py-6">
@@ -395,6 +438,45 @@ export async function handleRevokeSession(req: Request, res: Response): Promise<
 
   await revokeDesignerSession(sessionId)
   res.redirect('/dashboard')
+}
+
+export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const repo = body['repo'] as string | undefined
+  if (!repo) { res.status(400).send('Missing repo'); return }
+
+  const appId = process.env.GITHUB_APP_ID
+  if (!appId) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+
+  let privateKey: string
+  try {
+    privateKey = loadPrivateKey()
+  } catch (err) {
+    res.status(500).send(err instanceof Error ? err.message : String(err))
+    return
+  }
+
+  let repos: Array<{ full_name: string }>
+  try {
+    repos = await getInstallationRepos(user.installation_id, appId, privateKey)
+  } catch (err) {
+    res.status(502).send(`GitHub API error: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  if (!repos.some(r => r.full_name === repo)) {
+    res.status(403).send('Repo not accessible via this installation')
+    return
+  }
+
+  await updateUserRepo(user.id, repo)
+  res.redirect(`/dashboard?switched=${encodeURIComponent(repo)}`)
 }
 
 function esc(str: string): string {
