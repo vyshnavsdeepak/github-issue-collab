@@ -474,6 +474,7 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     return
   }
 
+  void db.markInviteOpened(code)
   void db.recordInviteEvent(code, 'invite_opened')
 
   const ownerUser = await db.getUserById(inviteRecord.user_id)

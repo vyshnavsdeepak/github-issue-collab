@@ -55,6 +55,9 @@ export async function runMigrations(): Promise<void> {
   await db`
     UPDATE invite_codes SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL
   `
+  await db`
+    ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ
+  `
 }
 
 export interface User {
@@ -93,6 +96,7 @@ export interface InviteCode {
   is_demo: boolean
   created_at: string
   expires_at: string | null
+  opened_at: string | null
 }
 
 export async function createUser(params: {
@@ -206,6 +210,11 @@ export async function getInviteCode(code: string): Promise<InviteCode | null> {
   const db = sql()
   const rows = await db`SELECT * FROM invite_codes WHERE code = ${code} LIMIT 1`
   return (rows[0] as InviteCode) ?? null
+}
+
+export async function markInviteOpened(code: string): Promise<void> {
+  const db = sql()
+  await db`UPDATE invite_codes SET opened_at = NOW() WHERE code = ${code} AND opened_at IS NULL`
 }
 
 export async function markInviteUsed(code: string): Promise<void> {
