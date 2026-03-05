@@ -8,6 +8,7 @@ import {
   listIssueComments,
   addComment,
 } from './github.js'
+import { put } from '@vercel/blob'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -294,10 +295,16 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
   <div class="px-6 py-6 border-b-4 border-black">
     <h3 class="font-bold text-lg mb-4">Add a Comment</h3>
     ${successMsg}
-    <form method="POST" action="/designer/comment" class="flex flex-col gap-3 max-w-2xl">
+    <form method="POST" action="/designer/comment" enctype="multipart/form-data" class="flex flex-col gap-3 max-w-2xl">
       <input type="hidden" name="issue_number" value="${issueNumber}">
       <textarea name="body" rows="4" required placeholder="Share your design thoughts…"
         class="border-2 border-black px-3 py-2 text-sm w-full bg-white"></textarea>
+      <div>
+        <label class="text-xs uppercase tracking-widest block mb-1">Screenshots (optional, up to 5)</label>
+        <input type="file" name="screenshots" multiple accept="image/*"
+          class="text-sm border-2 border-black px-2 py-1 w-full bg-white cursor-pointer">
+        <p class="text-xs text-gray-500 mt-1">Attach screenshots or mockups — they'll be embedded in the comment.</p>
+      </div>
       <div class="flex gap-3">
         <button type="submit" class="bg-black text-white font-bold text-sm px-5 py-2 border-2 border-black hover:bg-white hover:text-black">
           Post Comment
@@ -332,6 +339,28 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
   res.send(layout(`#${issueNumber} ${issue.title}`, body, ctx.session.github_user ?? 'designer', `${ctx.owner}/${ctx.repo}`))
 }
 
+async function uploadScreenshots(files: Express.Multer.File[]): Promise<string[]> {
+  const token = process.env.BLOB_READ_WRITE_TOKEN
+  if (!token || files.length === 0) return []
+
+  const urls: string[] = []
+  for (const file of files) {
+    try {
+      const ext = file.originalname.split('.').pop() ?? 'png'
+      const filename = `designer-screenshots/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+      const { url } = await put(filename, file.buffer, {
+        access: 'public',
+        contentType: file.mimetype,
+        token,
+      })
+      urls.push(url)
+    } catch (err) {
+      console.warn(`[designer] Failed to upload screenshot: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return urls
+}
+
 export async function handleDesignerComment(req: Request, res: Response): Promise<void> {
   let ctx: DesignerContext | null
   try {
@@ -355,13 +384,22 @@ export async function handleDesignerComment(req: Request, res: Response): Promis
     return
   }
 
+  const files = (req.files as Express.Multer.File[] | undefined) ?? []
+  let imageMarkdown = ''
+  if (files.length > 0) {
+    const urls = await uploadScreenshots(files)
+    if (urls.length > 0) {
+      imageMarkdown = '\n\n' + urls.map((url, i) => `![Screenshot ${i + 1}](${url})`).join('\n')
+    }
+  }
+
   try {
     await addComment({
       owner: ctx.owner,
       repo: ctx.repo,
       issueNumber,
       token: ctx.token,
-      body: `[Designer] ${commentBody}`,
+      body: `[Designer] ${commentBody}${imageMarkdown}`,
     })
   } catch (err) {
     res.status(502).send(`GitHub error: ${err instanceof Error ? err.message : String(err)}`)
