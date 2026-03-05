@@ -273,7 +273,10 @@ fn read_probe(
     status: String,
     issue_num: Option<u64>,
 ) -> (Option<String>, String) {
-    // Check whether pane 1 exists
+    // List all pane indices for this window.
+    // With pane-base-index=1 the first (and often only) pane is index 1.
+    // A probe split pane only exists when there are 2+ panes; it has the
+    // highest index.
     let panes_out = std::process::Command::new("/opt/homebrew/bin/tmux")
         .args([
             "list-panes",
@@ -284,20 +287,22 @@ fn read_probe(
         ])
         .output()
         .ok();
-    let has_bottom = panes_out
+    let indices: Vec<usize> = panes_out
         .as_ref()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
-                .any(|l| l.trim() == "1")
+                .filter_map(|l| l.trim().parse::<usize>().ok())
+                .collect()
         })
-        .unwrap_or(false);
+        .unwrap_or_default();
 
-    if !has_bottom {
+    // Only has a probe pane when there are at least 2 panes.
+    if indices.len() < 2 {
         return (None, status);
     }
-
-    let target = format!("{session}:{window_name}.1");
+    let probe_idx = *indices.iter().max().unwrap();
+    let target = format!("{session}:{window_name}.{probe_idx}");
 
     // Ask tmux what program the pane is running — shell means probe is done.
     let current_cmd = std::process::Command::new("/opt/homebrew/bin/tmux")

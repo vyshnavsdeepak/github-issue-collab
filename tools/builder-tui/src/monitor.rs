@@ -82,6 +82,33 @@ async fn send_keys(config: &Config, target: &str, text: &str) {
         .await;
 }
 
+/// Return the pane index of the probe (bottom split) pane for a window, if one exists.
+/// With pane-base-index=1 the main pane is always index 1; a split probe pane
+/// gets index 2+.  Returns None when the window has only one pane.
+async fn probe_pane_index(config: &Config, window_name: &str) -> Option<usize> {
+    let out = tokio::process::Command::new(&config.tmux)
+        .args([
+            "list-panes",
+            "-t",
+            &format!("{}:{}", config.session, window_name),
+            "-F",
+            "#{pane_index}",
+        ])
+        .output()
+        .await
+        .ok()?;
+    let mut indices: Vec<usize> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<usize>().ok())
+        .collect();
+    indices.sort_unstable();
+    if indices.len() >= 2 {
+        Some(*indices.last().unwrap())
+    } else {
+        None
+    }
+}
+
 /// Spawn a non-interactive `claude --print` in a split pane (bottom 35%) of the given
 /// window. The top pane (interactive Claude or shell) is left untouched.
 /// The prompt is written to a temp script so quoting is never a problem.
@@ -94,27 +121,52 @@ async fn send_print_pane(
 ) {
     let win_target = format!("{}:{}", config.session, window_name);
 
-    // Kill any existing bottom pane from a previous probe
-    let _ = tokio::process::Command::new(&config.tmux)
-        .args(["kill-pane", "-t", &format!("{win_target}.1")])
+    // Kill any existing probe pane (only if a second pane actually exists)
+    if let Some(idx) = probe_pane_index(config, window_name).await {
+        let _ = tokio::process::Command::new(&config.tmux)
+            .args(["kill-pane", "-t", &format!("{win_target}.{idx}")])
+            .output()
+            .await;
+    }
+
+    // Create bottom split (35% height), don't steal focus from top pane.
+    // -P -F prints the new pane's index so we know exactly where to send keys.
+    let out = tokio::process::Command::new(&config.tmux)
+        .args([
+            "split-window",
+            "-t",
+            &win_target,
+            "-v",
+            "-p",
+            "35",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_index}",
+        ])
         .output()
         .await;
-
-    // Create bottom split (35% height), don't steal focus from top pane
-    let ok = tokio::process::Command::new(&config.tmux)
-        .args(["split-window", "-t", &win_target, "-v", "-p", "35", "-d"])
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !ok {
-        log(
-            log_tx,
-            format!("[print] Could not split pane for {window_name}"),
-        );
-        return;
-    }
+    let probe_idx = match out {
+        Ok(o) if o.status.success() => {
+            match String::from_utf8_lossy(&o.stdout).trim().parse::<usize>() {
+                Ok(n) => n,
+                Err(_) => {
+                    log(
+                        log_tx,
+                        format!("[print] Could not parse new pane index for {window_name}"),
+                    );
+                    return;
+                }
+            }
+        }
+        _ => {
+            log(
+                log_tx,
+                format!("[print] Could not split pane for {window_name}"),
+            );
+            return;
+        }
+    };
 
     // Write a self-contained script so we never worry about shell quoting
     let script_path = format!("/tmp/monitor-{window_name}.sh");
@@ -127,7 +179,7 @@ async fn send_print_pane(
         let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
     }
 
-    let bottom = format!("{win_target}.1");
+    let bottom = format!("{win_target}.{probe_idx}");
     let _ = tokio::process::Command::new(&config.tmux)
         .args(["send-keys", "-t", &bottom, &script_path, "Enter"])
         .output()
@@ -135,55 +187,29 @@ async fn send_print_pane(
 
     log(
         log_tx,
-        format!("[print] Spawned --print Claude in {window_name} bottom pane"),
+        format!("[print] Spawned --print Claude in {window_name} pane {probe_idx}"),
     );
-}
-
-/// Capture the bottom split pane of a window (pane index 1).
-/// Returns empty string if no bottom pane exists.
-async fn capture_bottom_pane(config: &Config, window_name: &str) -> String {
-    let target = format!("{}:{}.1", config.session, window_name);
-    let Ok(out) = tokio::process::Command::new(&config.tmux)
-        .args(["capture-pane", "-t", &target, "-p"])
-        .output()
-        .await
-    else {
-        return String::new();
-    };
-    String::from_utf8_lossy(&out.stdout).to_string()
 }
 
 /// Check if the bottom pane of a window is still running (probe in progress).
 pub async fn bottom_pane_active(config: &Config, window_name: &str) -> bool {
-    let target = format!("{}:{}.1", config.session, window_name);
-    // list-panes returns one line per pane; if pane 1 exists it will appear
-    let Ok(out) = tokio::process::Command::new(&config.tmux)
+    let Some(idx) = probe_pane_index(config, window_name).await else {
+        return false;
+    };
+    let target = format!("{}:{}.{idx}", config.session, window_name);
+    let current_cmd = tokio::process::Command::new(&config.tmux)
         .args([
-            "list-panes",
+            "display-message",
             "-t",
-            &format!("{}:{}", config.session, window_name),
-            "-F",
-            "#{pane_index}:#{pane_pid}",
+            &target,
+            "-p",
+            "#{pane_current_command}",
         ])
         .output()
         .await
-    else {
-        return false;
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    // If pane 1 exists, a probe may be running; check if its content still shows claude
-    if text.lines().any(|l| l.starts_with("1:")) {
-        let content = capture_bottom_pane(config, window_name).await;
-        // Still running if no shell prompt at the end yet
-        let finished = content.lines().rev().take(3).any(|l| {
-            let t = l.trim();
-            t.starts_with("vyshnav@") || t.starts_with(">> ") || t == ">>"
-        });
-        !finished
-    } else {
-        let _ = target; // suppress unused warning
-        false
-    }
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    !matches!(current_cmd.as_str(), "zsh" | "bash" | "sh" | "fish" | "")
 }
 
 /// Parse the last JSON object from a block of text (used to read --print output).
@@ -733,7 +759,7 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
     // Collect PR states upfront (one pass)
     let mut pr_states: Vec<(u64, String, String)> = Vec::new();
     for (pr_num, head_branch) in &prs {
-        match github::get_pr_info(&config.repo, *pr_num).await {
+        match github::get_pr_info(&config.repo, *pr_num, head_branch).await {
             Ok(info) => pr_states.push((*pr_num, head_branch.clone(), info.merge_state)),
             Err(e) => log(
                 log_tx,
@@ -743,12 +769,13 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
-    // ── Step 1: Merge the oldest CLEAN PR and stop ───────────────────────────
+    // ── Step 1: Merge the oldest CLEAN/UNSTABLE PR and stop ─────────────────
+    // UNSTABLE = non-required CI checks failing but still mergeable.
     for (pr_num, _, state) in &pr_states {
-        if state == "CLEAN" {
+        if state == "CLEAN" || state == "UNSTABLE" {
             log(
                 log_tx,
-                format!("[merge] PR #{pr_num} is CLEAN — merging (oldest first)"),
+                format!("[merge] PR #{pr_num} is {state} — merging (oldest first)"),
             );
             toast(log_tx, "INFO", &format!("Auto-merging PR #{pr_num}"));
             match github::merge_pr(&config.repo, *pr_num).await {
@@ -809,9 +836,9 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                     let _ = std::fs::remove_file(format!("/tmp/worker-issue-{n}-conflict.txt"));
                     'poll: for attempt in 0u8..3 {
                         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                        if let Ok(fresh) = github::get_pr_info(&config.repo, *pr_num).await {
+                        if let Ok(fresh) = github::get_pr_info(&config.repo, *pr_num, "").await {
                             match fresh.merge_state.as_str() {
-                                "CLEAN" => {
+                                "CLEAN" | "UNSTABLE" => {
                                     match github::merge_pr(&config.repo, *pr_num).await {
                                         Ok(()) => {
                                             log(
@@ -988,7 +1015,7 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                     }
                 }
             }
-            "CLEAN" | "BEHIND" => {} // handled above
+            "CLEAN" | "UNSTABLE" | "BEHIND" => {} // handled above
             other => {
                 log(
                     log_tx,

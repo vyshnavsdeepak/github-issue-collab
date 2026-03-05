@@ -161,7 +161,9 @@ pub struct PrInfo {
 }
 
 /// Get the merge-state of an open PR.
-pub async fn get_pr_info(repo: &str, pr_num: u64) -> Result<PrInfo> {
+/// `head_branch` is used to detect when GitHub reports UNSTABLE but the branch
+/// is actually behind main (diverged), in which case we return BEHIND instead.
+pub async fn get_pr_info(repo: &str, pr_num: u64, head_branch: &str) -> Result<PrInfo> {
     let num = pr_num.to_string();
     let out = run_gh(&[
         "pr",
@@ -175,9 +177,31 @@ pub async fn get_pr_info(repo: &str, pr_num: u64) -> Result<PrInfo> {
         ".mergeStateStatus",
     ])
     .await?;
-    Ok(PrInfo {
-        merge_state: out.trim().to_string(),
-    })
+    let reported = out.trim().to_string();
+
+    // GitHub may report UNSTABLE even when the branch is diverged from main.
+    // In that case a merge attempt fails with "out of date", so we check the
+    // compare endpoint and override to BEHIND when the branch is actually behind.
+    let merge_state = if reported == "UNSTABLE" {
+        let compare = run_gh(&[
+            "api",
+            &format!("repos/{repo}/compare/main...{head_branch}"),
+            "-q",
+            ".behind_by",
+        ])
+        .await
+        .unwrap_or_default();
+        let behind_by: u64 = compare.trim().parse().unwrap_or(0);
+        if behind_by > 0 {
+            "BEHIND".to_string()
+        } else {
+            reported
+        }
+    } else {
+        reported
+    };
+
+    Ok(PrInfo { merge_state })
 }
 
 /// List all open PRs: returns (pr_number, head_branch_name).
