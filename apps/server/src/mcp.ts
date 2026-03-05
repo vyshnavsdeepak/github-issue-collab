@@ -594,6 +594,8 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
     </div>
   </section>`
 
+  const note = inviteRecord.note
+
   const clientId = process.env.GITHUB_APP_CLIENT_ID
   if (!clientId) {
     res.status(500).send(errorPage({
@@ -636,7 +638,11 @@ export async function handleInvite(req: Request, res: Response): Promise<void> {
         </p>
       </div>
     </div>
-  </section>
+  </section>${note ? `
+  <section class="border-b-4 border-black px-6 py-6 bg-yellow-50">
+    <p class="text-xs uppercase tracking-widest mb-2 text-gray-500">Note from ${esc(inviterLogin)}</p>
+    <p class="text-base font-mono">${esc(note)}</p>
+  </section>` : ''}
   ${issuePreviewSection}
   <section class="px-6 py-10">
     <p class="text-sm text-gray-600 mb-6">You'll get designer access — issues labeled <code class="bg-gray-100 px-1">designer-input</code> only.</p>

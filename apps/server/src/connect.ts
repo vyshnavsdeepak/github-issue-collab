@@ -381,6 +381,7 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
       <h3 class="font-bold text-lg">Active Designers</h3>
       <div class="flex flex-col items-end gap-2">
         <input id="recipient-label-input" type="text" placeholder="Recipient name (optional)" class="text-xs border-2 border-black px-2 py-1 font-mono w-48 focus:outline-none" maxlength="120">
+        <input id="invite-note-input" type="text" placeholder="Optional note for the designer…" class="text-xs border-2 border-black px-2 py-1 font-mono w-64 bg-white">
         <button id="new-invite-btn" onclick="createInvite()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">+ New Invite Link</button>
         <div id="invite-url-display" class="text-xs border-2 border-black p-3 max-w-lg hidden"></div>
       </div>
@@ -389,14 +390,16 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
           const btn = document.getElementById('new-invite-btn');
           const display = document.getElementById('invite-url-display');
           const labelInput = document.getElementById('recipient-label-input');
-          const recipientLabel = labelInput.value.trim();
+          const recipientLabel = labelInput ? labelInput.value.trim() : '';
+          const noteInput = document.getElementById('invite-note-input');
+          const note = noteInput ? noteInput.value.trim() : '';
           btn.disabled = true;
           btn.textContent = '...';
           try {
             const res = await fetch('/dashboard/invite', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ recipient_label: recipientLabel || undefined }),
+              body: JSON.stringify({ recipient_label: recipientLabel || undefined, note: note || undefined }),
             });
             const data = await res.json();
             display.innerHTML =
@@ -669,8 +672,9 @@ export async function handleCreateInvite(req: Request, res: Response): Promise<v
 
   const body = req.body as Record<string, unknown>
   const recipientLabel = typeof body['recipient_label'] === 'string' ? body['recipient_label'] : undefined
+  const note = typeof body['note'] === 'string' ? body['note'] : undefined
 
-  const invite = await createInviteCode(user.id, false, undefined, recipientLabel)
+  const invite = await createInviteCode(user.id, false, undefined, recipientLabel, undefined, note)
   void recordInviteEvent(invite.code, 'invite_generated')
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${invite.code}`
   const messageTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${inviteUrl}`
