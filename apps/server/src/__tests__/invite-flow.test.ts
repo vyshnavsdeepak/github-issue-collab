@@ -8,7 +8,7 @@
  * Steps exercised:
  *   1. Create an invite code via the dashboard API
  *   2. GET /invite?code=<token>  →  HTML with GitHub OAuth sign-in link (no name form)
- *   3. GET /invite/oauth/callback →  designer session created in DB + redirect to /designer
+ *   3. GET /invite/oauth/callback →  designer session created in DB + identity confirmation page
  *   4. GET /invite/oauth/callback sets a designer_session cookie
  */
 
@@ -25,7 +25,7 @@ vi.mock('../github.js', () => ({
   addComment: () => Promise.resolve({ html_url: 'https://github.com' }),
   addLabel: () => Promise.resolve(),
   removeLabel: () => Promise.resolve(),
-  getAuthUser: (_token: string) => Promise.resolve({ login: 'alice' }),
+  getAuthUser: (_token: string) => Promise.resolve({ login: 'alice', name: 'Alice Dev', avatar_url: 'https://avatars.githubusercontent.com/u/1' }),
 }))
 
 // ---------------------------------------------------------------------------
@@ -187,13 +187,15 @@ describe('Designer invite flow', () => {
     expect(res.text).toContain('testdev/testrepo')
   })
 
-  it('step 3 — GET /invite/oauth/callback creates a designer session and redirects to /designer', async () => {
+  it('step 3 — GET /invite/oauth/callback creates a designer session and shows identity confirmation', async () => {
     const res = await supertest(app)
       .get(`/invite/oauth/callback?code=gh-oauth-code&state=${inviteCode}`)
 
-    // Callback redirects to /designer after creating the session
-    expect(res.status).toBe(302)
-    expect(res.headers['location']).toBe('/designer')
+    // Callback now shows an identity confirmation page instead of redirecting
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toMatch(/html/)
+    expect(res.text).toContain('alice')
+    expect(res.text).toContain('/designer')
 
     // The invite should now be marked used
     const invite = inviteCodes.get(inviteCode)
@@ -214,7 +216,8 @@ describe('Designer invite flow', () => {
     const res = await supertest(app)
       .get(`/invite/oauth/callback?code=gh-oauth-code-2&state=${freshInvite.code}`)
 
-    expect(res.status).toBe(302)
+    // Confirmation page is returned (200) with the cookie set
+    expect(res.status).toBe(200)
 
     // A Set-Cookie header with designer_session must be present
     const setCookie = res.headers['set-cookie'] as string[] | string | undefined
