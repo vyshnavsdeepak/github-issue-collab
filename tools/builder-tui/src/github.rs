@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
 async fn run_gh(args: &[&str]) -> Result<String> {
@@ -18,22 +18,32 @@ pub async fn get_discussion(repo: &str, issue_num: u64) -> Result<String> {
     let num = issue_num.to_string();
     let jq = r#""=== DISCUSSION ===\nTitle: " + .title + "\n\n" + .body + "\n\n=== COMMENTS ===\n" + (.comments | map(.author.login + ": " + .body) | join("\n---\n"))"#;
     run_gh(&[
-        "issue", "view", &num,
-        "--repo", repo,
+        "issue",
+        "view",
+        &num,
+        "--repo",
+        repo,
         "--comments",
-        "--json", "title,body,comments",
-        "-q", jq,
+        "--json",
+        "title,body,comments",
+        "-q",
+        jq,
     ])
     .await
 }
 
 pub async fn list_open_issues(repo: &str) -> Result<Vec<(u64, String)>> {
     let out = run_gh(&[
-        "issue", "list",
-        "--repo", repo,
-        "--state", "open",
-        "--json", "number,title",
-        "-q", r##".[] | "#\(.number): \(.title)""##,
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,title",
+        "-q",
+        r##".[] | "#\(.number): \(.title)""##,
     ])
     .await?;
 
@@ -53,10 +63,7 @@ pub async fn list_open_issues(repo: &str) -> Result<Vec<(u64, String)>> {
 
 pub async fn create_issue(repo: &str, title: &str, body: &str) -> Result<u64> {
     let out = run_gh(&[
-        "issue", "create",
-        "--repo", repo,
-        "--title", title,
-        "--body", body,
+        "issue", "create", "--repo", repo, "--title", title, "--body", body,
     ])
     .await?;
 
@@ -67,23 +74,23 @@ pub async fn create_issue(repo: &str, title: &str, body: &str) -> Result<u64> {
 
 pub async fn post_comment(repo: &str, issue_num: u64, body: &str) -> Result<()> {
     let num = issue_num.to_string();
-    run_gh(&[
-        "issue", "comment", &num,
-        "--repo", repo,
-        "--body", body,
-    ])
-    .await?;
+    run_gh(&["issue", "comment", &num, "--repo", repo, "--body", body]).await?;
     Ok(())
 }
 
 pub async fn list_prs_for_issue(repo: &str, issue_num: u64) -> Result<Vec<u64>> {
     let jq = format!(r##".[] | select(.body | test("#{issue_num}")) | .number"##);
     let out = run_gh(&[
-        "pr", "list",
-        "--repo", repo,
-        "--state", "all",
-        "--json", "number,body",
-        "-q", &jq,
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "all",
+        "--json",
+        "number,body",
+        "-q",
+        &jq,
     ])
     .await
     .unwrap_or_default();
@@ -97,18 +104,21 @@ pub async fn list_prs_for_issue(repo: &str, issue_num: u64) -> Result<Vec<u64>> 
 
 pub async fn get_issue(repo: &str, issue_num: u64) -> Result<(String, String)> {
     let n = issue_num.to_string();
-    let title = run_gh(&["issue", "view", &n, "--repo", repo, "--json", "title", "-q", ".title"]).await?;
-    let body = run_gh(&["issue", "view", &n, "--repo", repo, "--json", "body", "-q", ".body"]).await?;
+    let title = run_gh(&[
+        "issue", "view", &n, "--repo", repo, "--json", "title", "-q", ".title",
+    ])
+    .await?;
+    let body = run_gh(&[
+        "issue", "view", &n, "--repo", repo, "--json", "body", "-q", ".body",
+    ])
+    .await?;
     Ok((title.trim().to_string(), body.trim().to_string()))
 }
 
 pub async fn get_issue_state(repo: &str, issue_num: u64) -> Result<String> {
     let num = issue_num.to_string();
     let out = run_gh(&[
-        "issue", "view", &num,
-        "--repo", repo,
-        "--json", "state",
-        "-q", ".state",
+        "issue", "view", &num, "--repo", repo, "--json", "state", "-q", ".state",
     ])
     .await?;
     Ok(out.trim().to_string())
@@ -117,11 +127,16 @@ pub async fn get_issue_state(repo: &str, issue_num: u64) -> Result<String> {
 pub async fn merged_prs_since(repo: &str, since: &str) -> Result<Vec<(u64, String)>> {
     let jq = format!(r##".[] | select(.mergedAt > "{since}") | "#\(.number) \(.title)""##);
     let out = run_gh(&[
-        "pr", "list",
-        "--repo", repo,
-        "--state", "merged",
-        "--json", "number,title,mergedAt",
-        "-q", &jq,
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "merged",
+        "--json",
+        "number,title,mergedAt",
+        "-q",
+        &jq,
     ])
     .await
     .unwrap_or_default();
@@ -149,23 +164,35 @@ pub struct PrInfo {
 pub async fn get_pr_info(repo: &str, pr_num: u64) -> Result<PrInfo> {
     let num = pr_num.to_string();
     let out = run_gh(&[
-        "pr", "view", &num,
-        "--repo", repo,
-        "--json", "mergeStateStatus",
-        "-q", ".mergeStateStatus",
+        "pr",
+        "view",
+        &num,
+        "--repo",
+        repo,
+        "--json",
+        "mergeStateStatus",
+        "-q",
+        ".mergeStateStatus",
     ])
     .await?;
-    Ok(PrInfo { merge_state: out.trim().to_string() })
+    Ok(PrInfo {
+        merge_state: out.trim().to_string(),
+    })
 }
 
 /// List all open PRs: returns (pr_number, head_branch_name).
 pub async fn list_open_prs(repo: &str) -> Result<Vec<(u64, String)>> {
     let out = run_gh(&[
-        "pr", "list",
-        "--repo", repo,
-        "--state", "open",
-        "--json", "number,headRefName",
-        "-q", r#".[] | "\(.number) \(.headRefName)""#,
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName",
+        "-q",
+        r#".[] | "\(.number) \(.headRefName)""#,
     ])
     .await
     .unwrap_or_default();
@@ -186,8 +213,11 @@ pub async fn list_open_prs(repo: &str) -> Result<Vec<(u64, String)>> {
 pub async fn merge_pr(repo: &str, pr_num: u64) -> Result<()> {
     let num = pr_num.to_string();
     run_gh(&[
-        "pr", "merge", &num,
-        "--repo", repo,
+        "pr",
+        "merge",
+        &num,
+        "--repo",
+        repo,
         "--squash",
         "--delete-branch",
     ])

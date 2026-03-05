@@ -70,20 +70,35 @@ Output one JSON per line or NONE:
         };
 
         let title_preview: String = task.title.chars().take(30).collect();
-        toast(&log_tx, "SUCCESS", &format!("Filed #{issue_num}: {title_preview}"));
+        toast(
+            &log_tx,
+            "SUCCESS",
+            &format!("Filed #{issue_num}: {title_preview}"),
+        );
 
         launch_worker(&config, issue_num, &task.title, &task.body, &log_tx).await;
     }
 }
 
 /// Spin up a worker directly for an existing issue number.
-pub async fn run_new_job(config: Arc<Config>, issue_num: u64, log_tx: mpsc::UnboundedSender<String>) {
-    toast(&log_tx, "INFO", &format!("Launching worker for #{issue_num}..."));
+pub async fn run_new_job(
+    config: Arc<Config>,
+    issue_num: u64,
+    log_tx: mpsc::UnboundedSender<String>,
+) {
+    toast(
+        &log_tx,
+        "INFO",
+        &format!("Launching worker for #{issue_num}..."),
+    );
 
     let (title, body) = match github::get_issue(&config.repo, issue_num).await {
         Ok(r) => r,
         Err(e) => {
-            log(&log_tx, format!("[prompt] Error fetching issue #{issue_num}: {e}"));
+            log(
+                &log_tx,
+                format!("[prompt] Error fetching issue #{issue_num}: {e}"),
+            );
             toast(&log_tx, "ERROR", &format!("Failed to fetch #{issue_num}"));
             return;
         }

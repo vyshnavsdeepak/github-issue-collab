@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 #[derive(Debug, Clone, serde::Deserialize, Default)]
@@ -27,7 +27,12 @@ pub struct WorkerState {
     pub probe: Option<String>,
 }
 
-fn compute_pipeline(worktree_exists: bool, branch_name: &str, pr: &Option<String>, status: &str) -> String {
+fn compute_pipeline(
+    worktree_exists: bool,
+    branch_name: &str,
+    pr: &Option<String>,
+    status: &str,
+) -> String {
     let wt = if worktree_exists { "🌳" } else { "·" };
     let br = if worktree_exists { "🌿" } else { "·" };
     let pr_part = match pr {
@@ -35,17 +40,17 @@ fn compute_pipeline(worktree_exists: bool, branch_name: &str, pr: &Option<String
         None => "·".to_string(),
     };
     let state = match status {
-        "active"   => "⚡",
-        "idle"     => "⏸",
-        "shell"    => "🐚",
-        "done"     => "✅",
-        "queued"   => "⏳",
+        "active" => "⚡",
+        "idle" => "⏸",
+        "shell" => "🐚",
+        "done" => "✅",
+        "queued" => "⏳",
         "sleeping" => "💤",
-        "posted"   => "📮",
-        "no-window"=> "👻",
+        "posted" => "📮",
+        "no-window" => "👻",
         "conflict" => "⚠️",
-        "probing"  => "🔍",
-        _          => "?",
+        "probing" => "🔍",
+        _ => "?",
     };
     let _ = branch_name;
     format!("{wt}{br}{pr_part} {state}")
@@ -89,7 +94,8 @@ pub async fn run(
                     let worktree_path = format!("{repo_root}/.claude/worktrees/{name}");
                     let worktree_exists = std::path::Path::new(&worktree_path).exists();
                     let branch_name = format!("feature/issue-{issue_num}");
-                    let pipeline = compute_pipeline(worktree_exists, &branch_name, &pr, "no-window");
+                    let pipeline =
+                        compute_pipeline(worktree_exists, &branch_name, &pr, "no-window");
                     states.push(WorkerState {
                         window_index: usize::MAX,
                         window_name: name,
@@ -128,9 +134,10 @@ pub async fn run(
                         ("active", "done") => {
                             Some(format!("__TOAST_SUCCESS_{} has a PR!__", w.window_name))
                         }
-                        ("shell", "idle") => {
-                            Some(format!("__TOAST_INFO_{} Claude relaunched__", w.window_name))
-                        }
+                        ("shell", "idle") => Some(format!(
+                            "__TOAST_INFO_{} Claude relaunched__",
+                            w.window_name
+                        )),
                         (_, "no-window") => {
                             Some(format!("__TOAST_WARNING_{} window lost__", w.window_name))
                         }
@@ -168,11 +175,9 @@ pub fn scan_worktrees(repo_root: &str) -> Vec<u64> {
         .filter_map(|e| {
             let name = e.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("issue-") {
-                name_str["issue-".len()..].parse::<u64>().ok()
-            } else {
-                None
-            }
+            name_str
+                .strip_prefix("issue-")
+                .and_then(|s| s.parse::<u64>().ok())
         })
         .collect();
 
@@ -180,9 +185,19 @@ pub fn scan_worktrees(repo_root: &str) -> Vec<u64> {
     issues
 }
 
-fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &str) -> Vec<WorkerState> {
+fn poll_tmux_windows(
+    session: &str,
+    builder_status: &BuilderStatus,
+    repo_root: &str,
+) -> Vec<WorkerState> {
     let Ok(out) = std::process::Command::new("/opt/homebrew/bin/tmux")
-        .args(["list-windows", "-t", session, "-F", "#{window_index} #{window_name}"])
+        .args([
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index} #{window_name}",
+        ])
         .output()
     else {
         return Vec::new();
@@ -193,9 +208,13 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
 
     for line in windows_text.lines() {
         let mut parts = line.splitn(2, ' ');
-        let Some(idx_str) = parts.next() else { continue };
+        let Some(idx_str) = parts.next() else {
+            continue;
+        };
         let Some(name) = parts.next() else { continue };
-        let Ok(idx) = idx_str.parse::<usize>() else { continue };
+        let Ok(idx) = idx_str.parse::<usize>() else {
+            continue;
+        };
 
         let pane_content = capture_pane(session, idx);
         let last_output = last_nonempty_line(&pane_content);
@@ -205,8 +224,7 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
         // Derive issue number from window name to locate worktree
         let issue_num_opt: Option<u64> = name
             .split(|c: char| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .last()
+            .rfind(|s| !s.is_empty())
             .and_then(|s| s.parse().ok());
         let (worktree_exists, branch_name) = if let Some(n) = issue_num_opt {
             let wt = format!("{repo_root}/.claude/worktrees/issue-{n}");
@@ -249,15 +267,30 @@ fn poll_tmux_windows(session: &str, builder_status: &BuilderStatus, repo_root: &
 
 /// Check pane 1 (bottom split) of a window for probe activity or finished JSON.
 /// Returns (probe_label, possibly_overridden_status).
-fn read_probe(session: &str, window_name: &str, status: String, issue_num: Option<u64>) -> (Option<String>, String) {
+fn read_probe(
+    session: &str,
+    window_name: &str,
+    status: String,
+    issue_num: Option<u64>,
+) -> (Option<String>, String) {
     // Check whether pane 1 exists
     let panes_out = std::process::Command::new("/opt/homebrew/bin/tmux")
-        .args(["list-panes", "-t", &format!("{session}:{window_name}"), "-F", "#{pane_index}"])
+        .args([
+            "list-panes",
+            "-t",
+            &format!("{session}:{window_name}"),
+            "-F",
+            "#{pane_index}",
+        ])
         .output()
         .ok();
     let has_bottom = panes_out
         .as_ref()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "1"))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.trim() == "1")
+        })
         .unwrap_or(false);
 
     if !has_bottom {
@@ -284,8 +317,11 @@ fn read_probe(session: &str, window_name: &str, status: String, issue_num: Optio
     }
 
     // Probe finished — try to parse JSON from output
-    let json_action = crate::monitor::parse_print_json(&content)
-        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(|s| s.to_string()));
+    let json_action = crate::monitor::parse_print_json(&content).and_then(|v| {
+        v.get("action")
+            .and_then(|a| a.as_str())
+            .map(|s| s.to_string())
+    });
 
     let _ = issue_num; // available for future use
     (json_action.clone(), status)
@@ -315,7 +351,14 @@ fn last_nonempty_line(content: &str) -> String {
 }
 
 fn classify_state(pane: &str, has_pr: bool) -> String {
-    let spinner_words = ["Crunching", "Brewing", "Baking", "Cogitating", "Thinking", "Analyzing"];
+    let spinner_words = [
+        "Crunching",
+        "Brewing",
+        "Baking",
+        "Cogitating",
+        "Thinking",
+        "Analyzing",
+    ];
     let is_active = spinner_words.iter().any(|w| pane.contains(w));
 
     // Claude REPL markers: startup banner or the ">" input prompt with surrounding Claude UI

@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::config::Config;
 use crate::github;
@@ -18,7 +18,10 @@ impl BackoffState {
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        Self { until_unix, needs_resume: false }
+        Self {
+            until_unix,
+            needs_resume: false,
+        }
     }
 
     pub fn in_backoff(&self) -> bool {
@@ -106,7 +109,10 @@ async fn send_print_pane(
         .unwrap_or(false);
 
     if !ok {
-        log(log_tx, format!("[print] Could not split pane for {window_name}"));
+        log(
+            log_tx,
+            format!("[print] Could not split pane for {window_name}"),
+        );
         return;
     }
 
@@ -118,10 +124,7 @@ async fn send_print_pane(
         prompt.replace('\'', r"'\''"),
     );
     if std::fs::write(&script_path, &script).is_ok() {
-        let _ = std::fs::set_permissions(
-            &script_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
     }
 
     let bottom = format!("{win_target}.1");
@@ -130,7 +133,10 @@ async fn send_print_pane(
         .output()
         .await;
 
-    log(log_tx, format!("[print] Spawned --print Claude in {window_name} bottom pane"));
+    log(
+        log_tx,
+        format!("[print] Spawned --print Claude in {window_name} bottom pane"),
+    );
 }
 
 /// Capture the bottom split pane of a window (pane index 1).
@@ -152,7 +158,13 @@ pub async fn bottom_pane_active(config: &Config, window_name: &str) -> bool {
     let target = format!("{}:{}.1", config.session, window_name);
     // list-panes returns one line per pane; if pane 1 exists it will appear
     let Ok(out) = tokio::process::Command::new(&config.tmux)
-        .args(["list-panes", "-t", &format!("{}:{}", config.session, window_name), "-F", "#{pane_index}:#{pane_pid}"])
+        .args([
+            "list-panes",
+            "-t",
+            &format!("{}:{}", config.session, window_name),
+            "-F",
+            "#{pane_index}:#{pane_pid}",
+        ])
         .output()
         .await
     else {
@@ -186,8 +198,11 @@ pub fn parse_print_json(output: &str) -> Option<serde_json::Value> {
 pub async fn list_windows(config: &Config) -> Vec<(usize, String)> {
     let Ok(out) = tokio::process::Command::new(&config.tmux)
         .args([
-            "list-windows", "-t", &config.session,
-            "-F", "#{window_index}:#{window_name}",
+            "list-windows",
+            "-t",
+            &config.session,
+            "-F",
+            "#{window_index}:#{window_name}",
         ])
         .output()
         .await
@@ -212,13 +227,19 @@ pub async fn list_windows(config: &Config) -> Vec<(usize, String)> {
 
 pub fn extract_issue_num(name: &str) -> Option<u64> {
     name.split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .last()
+        .rfind(|s| !s.is_empty())
         .and_then(|s| s.parse::<u64>().ok())
 }
 
 fn classify_pane(pane: &str) -> &'static str {
-    let spinner_words = ["Crunching", "Brewing", "Baking", "Cogitating", "Thinking", "Analyzing"];
+    let spinner_words = [
+        "Crunching",
+        "Brewing",
+        "Baking",
+        "Cogitating",
+        "Thinking",
+        "Analyzing",
+    ];
     if spinner_words.iter().any(|w| pane.contains(w)) {
         return "active";
     }
@@ -275,7 +296,7 @@ fn unix_to_iso8601(ts: u64) -> String {
 }
 
 fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
 
 // ─── Public functions ─────────────────────────────────────────────────────────
@@ -298,7 +319,9 @@ pub async fn write_builder_status(config: &Config, _log_tx: &mpsc::UnboundedSend
     let mut prs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for (_, name) in &windows {
-        let Some(issue_num) = extract_issue_num(name) else { continue };
+        let Some(issue_num) = extract_issue_num(name) else {
+            continue;
+        };
         if let Ok(pr_nums) = github::list_prs_for_issue(&config.repo, issue_num).await {
             if let Some(&pr_num) = pr_nums.first() {
                 prs.insert(name.clone(), format!("#{pr_num}"));
@@ -324,7 +347,11 @@ fn build_monitor_prompt(
     let pr_info = if open_prs.is_empty() {
         "No open PRs found for this issue.".to_string()
     } else {
-        let nums = open_prs.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+        let nums = open_prs
+            .iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         format!("Open PR(s) for this issue: {nums}")
     };
     let conflict_note = if conflict {
@@ -370,7 +397,9 @@ pub async fn monitor_windows(
     let windows = list_windows(config).await;
 
     for (idx, name) in &windows {
-        let Some(issue_num) = extract_issue_num(name) else { continue };
+        let Some(issue_num) = extract_issue_num(name) else {
+            continue;
+        };
         let pane = capture_pane(config, *idx).await;
         let state = classify_pane(&pane);
 
@@ -398,7 +427,10 @@ pub async fn monitor_windows(
                 // Check capacity before relaunching
                 let active = count_active_workers(config).await;
                 if active >= config.max_concurrent {
-                    log(log_tx, format!("[monitor] #{issue_num}: at capacity, skipping"));
+                    log(
+                        log_tx,
+                        format!("[monitor] #{issue_num}: at capacity, skipping"),
+                    );
                     continue;
                 }
                 let branch = format!("feature/issue-{issue_num}");
@@ -411,10 +443,16 @@ pub async fn monitor_windows(
                     worktree, claude_prompt.replace('\'', r"'\''")
                 );
                 if std::fs::write(&script_path, &script).is_ok() {
-                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                    let _ = std::fs::set_permissions(
+                        &script_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
                     let target = format!("{}:{}", config.session, idx);
                     send_keys(config, &target, &script_path).await;
-                    log(log_tx, format!("[monitor] #{issue_num}: relaunched interactive Claude"));
+                    log(
+                        log_tx,
+                        format!("[monitor] #{issue_num}: relaunched interactive Claude"),
+                    );
                     toast(log_tx, "WARNING", &format!("Relaunched #{issue_num}"));
                 }
                 continue;
@@ -427,7 +465,10 @@ pub async fn monitor_windows(
             .unwrap_or_default();
         let conflict = has_conflict_marker(issue_num);
 
-        log(log_tx, format!("[monitor] #{issue_num}: spawning AI log-reader probe (state={state})"));
+        log(
+            log_tx,
+            format!("[monitor] #{issue_num}: spawning AI log-reader probe (state={state})"),
+        );
         toast(log_tx, "INFO", &format!("Reading #{issue_num} logs…"));
 
         let prompt = build_monitor_prompt(issue_num, &worktree, &pane, &pr_nums, conflict);
@@ -441,7 +482,9 @@ pub async fn cleanup_finished(config: &Config, log_tx: &mpsc::UnboundedSender<St
     let windows = list_windows(config).await;
 
     for (idx, name) in &windows {
-        let Some(issue_num) = extract_issue_num(name) else { continue };
+        let Some(issue_num) = extract_issue_num(name) else {
+            continue;
+        };
 
         let state = github::get_issue_state(&config.repo, issue_num)
             .await
@@ -454,15 +497,23 @@ pub async fn cleanup_finished(config: &Config, log_tx: &mpsc::UnboundedSender<St
             log_tx,
             format!("[cleanup] Issue #{issue_num} closed — removing window {idx} and worktree"),
         );
-        toast(log_tx, "SUCCESS", &format!("Closed #{issue_num} — cleaned up"));
-
-        let worktree = format!(
-            "{}/.claude/worktrees/issue-{issue_num}",
-            config.repo_root
+        toast(
+            log_tx,
+            "SUCCESS",
+            &format!("Closed #{issue_num} — cleaned up"),
         );
+
+        let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
         if std::path::Path::new(&worktree).exists() {
             let _ = tokio::process::Command::new("git")
-                .args(["-C", &config.repo_root, "worktree", "remove", "--force", &worktree])
+                .args([
+                    "-C",
+                    &config.repo_root,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &worktree,
+                ])
                 .output()
                 .await;
         }
@@ -526,24 +577,50 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
     let merged = github::merged_prs_since(&config.repo, &last_check)
         .await
         .unwrap_or_default();
-    if merged.is_empty() {
-        return;
+
+    let new_merges = !merged.is_empty();
+    if new_merges {
+        let merged_count = merged.len();
+        let merged_titles: Vec<String> = merged.iter().map(|(n, t)| format!("#{n} {t}")).collect();
+        log(
+            log_tx,
+            format!(
+                "[rebase] Detected {merged_count} merged PR(s): {}",
+                merged_titles.join(", ")
+            ),
+        );
+        toast(
+            log_tx,
+            "INFO",
+            &format!("{merged_count} PR(s) merged — checking conflicts"),
+        );
     }
 
-    let merged_count = merged.len();
-    let merged_titles: Vec<String> = merged.iter().map(|(n, t)| format!("#{n} {t}")).collect();
-    log(log_tx, format!("[rebase] Detected {merged_count} merged PR(s): {}", merged_titles.join(", ")));
-    toast(log_tx, "INFO", &format!("{merged_count} PR(s) merged — checking conflicts"));
-
-    // Pull latest main
+    // Always fetch latest main so test_rebase works against current upstream
     let _ = tokio::process::Command::new("git")
-        .args(["-C", &config.repo_root, "fetch", "origin", "main", "--quiet"])
+        .args([
+            "-C",
+            &config.repo_root,
+            "fetch",
+            "origin",
+            "main",
+            "--quiet",
+        ])
         .output()
         .await;
 
     let windows = list_windows(config).await;
     for (idx, name) in &windows {
-        let Some(issue_num) = extract_issue_num(name) else { continue };
+        let Some(issue_num) = extract_issue_num(name) else {
+            continue;
+        };
+
+        // Skip if no new merges and no stale conflict marker — nothing changed
+        let has_stale_conflict = has_conflict_marker(issue_num);
+        if !new_merges && !has_stale_conflict {
+            continue;
+        }
+
         let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
         if !std::path::Path::new(&worktree).exists() {
             continue;
@@ -559,10 +636,20 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
         let pane = capture_pane(config, *idx).await;
 
         if !clean {
-            log(log_tx, format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT — spawning AI resolver"));
-            toast(log_tx, "WARNING", &format!("#{issue_num} has rebase conflicts!"));
+            log(
+                log_tx,
+                format!("[rebase] ⚠️  Issue #{issue_num}: CONFLICT — spawning AI resolver"),
+            );
+            toast(
+                log_tx,
+                "WARNING",
+                &format!("#{issue_num} has rebase conflicts!"),
+            );
         } else {
-            log(log_tx, format!("[rebase] Issue #{issue_num}: rebased cleanly — spawning AI pusher"));
+            log(
+                log_tx,
+                format!("[rebase] Issue #{issue_num}: rebased cleanly — spawning AI pusher"),
+            );
         }
 
         // Pass pane log + rebase result to AI; it reads the context and acts
@@ -578,16 +665,28 @@ pub async fn notify_rebase(config: &Config, log_tx: &mpsc::UnboundedSender<Strin
 
 /// Check all open PRs: merge CLEAN ones, rebase BEHIND ones, log DIRTY/BLOCKED.
 pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedSender<String>) {
-    let prs = github::list_open_prs(&config.repo).await.unwrap_or_default();
+    let prs = github::list_open_prs(&config.repo)
+        .await
+        .unwrap_or_default();
     if prs.is_empty() {
         return;
     }
 
-    log(log_tx, format!("[merge] Checking {} open PR(s)...", prs.len()));
+    log(
+        log_tx,
+        format!("[merge] Checking {} open PR(s)...", prs.len()),
+    );
 
     // Ensure we have latest main refs
     let _ = tokio::process::Command::new("git")
-        .args(["-C", &config.repo_root, "fetch", "origin", "main", "--quiet"])
+        .args([
+            "-C",
+            &config.repo_root,
+            "fetch",
+            "origin",
+            "main",
+            "--quiet",
+        ])
         .output()
         .await;
 
@@ -595,7 +694,10 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
         let info = match github::get_pr_info(&config.repo, *pr_num).await {
             Ok(i) => i,
             Err(e) => {
-                log(log_tx, format!("[merge] PR #{pr_num}: failed to get state: {e}"));
+                log(
+                    log_tx,
+                    format!("[merge] PR #{pr_num}: failed to get state: {e}"),
+                );
                 continue;
             }
         };
@@ -621,7 +723,10 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                 }
             }
             "BEHIND" => {
-                log(log_tx, format!("[merge] PR #{pr_num} is BEHIND main — rebasing"));
+                log(
+                    log_tx,
+                    format!("[merge] PR #{pr_num} is BEHIND main — rebasing"),
+                );
                 if let Some(n) = issue_num {
                     let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
                     if std::path::Path::new(&worktree).exists() {
@@ -629,13 +734,66 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                         if clean {
                             // Rebase applied by test_rebase — push directly
                             let push = tokio::process::Command::new("git")
-                                .args(["-C", &worktree, "push", "--force-with-lease", "origin", "HEAD"])
+                                .args([
+                                    "-C",
+                                    &worktree,
+                                    "push",
+                                    "--force-with-lease",
+                                    "origin",
+                                    "HEAD",
+                                ])
                                 .output()
                                 .await;
                             match push {
                                 Ok(o) if o.status.success() => {
-                                    log(log_tx, format!("[merge] PR #{pr_num}: rebased+pushed — will be CLEAN on next check"));
+                                    log(log_tx, format!("[merge] PR #{pr_num}: rebased+pushed — polling for CLEAN state"));
                                     toast(log_tx, "INFO", &format!("PR #{pr_num} rebased+pushed"));
+                                    // Clear stale conflict marker written by test_rebase
+                                    let _ = std::fs::remove_file(format!(
+                                        "/tmp/worker-issue-{n}-conflict.txt"
+                                    ));
+                                    // Poll up to 3×10s for GitHub to update merge state, then merge
+                                    'poll: for attempt in 0u8..3 {
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(10))
+                                            .await;
+                                        if let Ok(fresh) =
+                                            github::get_pr_info(&config.repo, *pr_num).await
+                                        {
+                                            match fresh.merge_state.as_str() {
+                                                "CLEAN" => {
+                                                    match github::merge_pr(&config.repo, *pr_num)
+                                                        .await
+                                                    {
+                                                        Ok(()) => {
+                                                            log(log_tx, format!("[merge] PR #{pr_num} merged after rebase"));
+                                                            toast(
+                                                                log_tx,
+                                                                "SUCCESS",
+                                                                &format!("Merged PR #{pr_num}!"),
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            log(log_tx, format!("[merge] PR #{pr_num} merge failed: {e}"));
+                                                            toast(
+                                                                log_tx,
+                                                                "ERROR",
+                                                                &format!(
+                                                                    "PR #{pr_num} merge failed"
+                                                                ),
+                                                            );
+                                                        }
+                                                    }
+                                                    break 'poll;
+                                                }
+                                                state if attempt < 2 => {
+                                                    log(log_tx, format!("[merge] PR #{pr_num}: state={state} after push (attempt {}), retrying...", attempt + 1));
+                                                }
+                                                state => {
+                                                    log(log_tx, format!("[merge] PR #{pr_num}: not CLEAN ({state}) after 30s, will retry next cycle"));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {
                                     // Fall back to sending command to the tmux window
@@ -662,14 +820,51 @@ pub async fn check_and_merge_open_prs(config: &Config, log_tx: &mpsc::UnboundedS
                 }
             }
             "DIRTY" => {
-                log(log_tx, format!("[merge] PR #{pr_num} ({head_branch}) is DIRTY (merge conflicts)"));
-                toast(log_tx, "WARNING", &format!("PR #{pr_num} has merge conflicts"));
+                log(
+                    log_tx,
+                    format!("[merge] PR #{pr_num} ({head_branch}) is DIRTY — spawning AI resolver"),
+                );
+                toast(
+                    log_tx,
+                    "WARNING",
+                    &format!("PR #{pr_num} has merge conflicts"),
+                );
+                if let Some(n) = issue_num {
+                    let worktree = format!("{}/.claude/worktrees/issue-{n}", config.repo_root);
+                    let name = format!("issue-{n}");
+                    if std::path::Path::new(&worktree).exists()
+                        && !bottom_pane_active(config, &name).await
+                    {
+                        let _ = std::fs::write(
+                            format!("/tmp/worker-issue-{n}-conflict.txt"),
+                            "conflict",
+                        );
+                        let pane = {
+                            let windows = list_windows(config).await;
+                            match windows
+                                .iter()
+                                .find(|(_, w)| extract_issue_num(w) == Some(n))
+                            {
+                                Some((idx, _)) => capture_pane(config, *idx).await,
+                                None => String::new(),
+                            }
+                        };
+                        let prompt = build_monitor_prompt(n, &worktree, &pane, &[*pr_num], true);
+                        send_print_pane(config, &name, &worktree, &prompt, log_tx).await;
+                    }
+                }
             }
             "BLOCKED" => {
-                log(log_tx, format!("[merge] PR #{pr_num} is BLOCKED (failing CI or awaiting review)"));
+                log(
+                    log_tx,
+                    format!("[merge] PR #{pr_num} is BLOCKED (failing CI or awaiting review)"),
+                );
             }
             other => {
-                log(log_tx, format!("[merge] PR #{pr_num}: merge state = {other}"));
+                log(
+                    log_tx,
+                    format!("[merge] PR #{pr_num}: merge state = {other}"),
+                );
             }
         }
 
@@ -684,8 +879,10 @@ pub async fn cleanup_orphaned_worktrees(config: &Config, log_tx: &mpsc::Unbounde
     }
     let issues = crate::poller::scan_worktrees(&config.repo_root);
     let windows = list_windows(config).await;
-    let active_issues: std::collections::HashSet<u64> =
-        windows.iter().filter_map(|(_, n)| extract_issue_num(n)).collect();
+    let active_issues: std::collections::HashSet<u64> = windows
+        .iter()
+        .filter_map(|(_, n)| extract_issue_num(n))
+        .collect();
 
     for issue_num in issues {
         if active_issues.contains(&issue_num) {
@@ -696,10 +893,20 @@ pub async fn cleanup_orphaned_worktrees(config: &Config, log_tx: &mpsc::Unbounde
             .unwrap_or_default();
         if state == "CLOSED" {
             let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
-            log(log_tx, format!("[cleanup] Orphaned worktree issue-{issue_num} closed — removing"));
+            log(
+                log_tx,
+                format!("[cleanup] Orphaned worktree issue-{issue_num} closed — removing"),
+            );
             toast(log_tx, "INFO", &format!("Cleaned up closed #{issue_num}"));
             let _ = tokio::process::Command::new("git")
-                .args(["-C", &config.repo_root, "worktree", "remove", "--force", &worktree])
+                .args([
+                    "-C",
+                    &config.repo_root,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &worktree,
+                ])
                 .output()
                 .await;
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -760,7 +967,10 @@ pub async fn promote_orphaned_worktrees(config: &Config, log_tx: &mpsc::Unbounde
         let target = format!("{}:{name}", config.session);
         send_keys(config, &target, &script_path).await;
 
-        log(log_tx, format!("[monitor] Promoted orphaned worktree → launched #{issue_num}"));
+        log(
+            log_tx,
+            format!("[monitor] Promoted orphaned worktree → launched #{issue_num}"),
+        );
         toast(log_tx, "INFO", &format!("Launched #{issue_num}"));
         launched += 1;
 
@@ -784,12 +994,17 @@ pub async fn resume_after_backoff(
     let _ = std::fs::remove_file("/tmp/rl-resumed.txt");
     backoff.lock().await.clear();
 
-    log(log_tx, "[builder] Backoff cleared — sending 'continue' to idle Claude windows");
+    log(
+        log_tx,
+        "[builder] Backoff cleared — sending 'continue' to idle Claude windows",
+    );
     toast(log_tx, "INFO", "Rate limit cleared");
 
     let windows = list_windows(config).await;
     for (idx, name) in &windows {
-        if name == "zsh" { continue; }
+        if name == "zsh" {
+            continue;
+        }
         let pane = capture_pane(config, *idx).await;
         if pane.contains("bypass permissions on") {
             let target = format!("{}:{}", config.session, idx);

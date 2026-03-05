@@ -7,8 +7,8 @@ mod poller;
 mod prompt;
 mod ui;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use app::App;
@@ -16,11 +16,11 @@ use config::Config;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use monitor::BackoffState;
-use ratatui::{Terminal, backend::CrosstermBackend};
-use tokio::sync::{Mutex, mpsc, watch};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::{mpsc, watch, Mutex};
 
 fn parse_args() -> Config {
     let mut config = Config::default();
@@ -29,32 +29,46 @@ fn parse_args() -> Config {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--session" | "-s" => {
-                if let Some(v) = args.next() { config.session = v; }
+                if let Some(v) = args.next() {
+                    config.session = v;
+                }
             }
             "--interval" | "-n" => {
                 if let Some(v) = args.next() {
-                    if let Ok(n) = v.parse() { config.interval_secs = n; }
+                    if let Ok(n) = v.parse() {
+                        config.interval_secs = n;
+                    }
                 }
             }
             "--repo" => {
-                if let Some(v) = args.next() { config.repo = v; }
+                if let Some(v) = args.next() {
+                    config.repo = v;
+                }
             }
             "--repo-root" => {
-                if let Some(v) = args.next() { config.repo_root = v; }
+                if let Some(v) = args.next() {
+                    config.repo_root = v;
+                }
             }
             "--discussion" => {
                 if let Some(v) = args.next() {
-                    if let Ok(n) = v.parse() { config.discussion_issue = n; }
+                    if let Ok(n) = v.parse() {
+                        config.discussion_issue = n;
+                    }
                 }
             }
             "--builder-sleep" => {
                 if let Some(v) = args.next() {
-                    if let Ok(n) = v.parse() { config.builder_sleep_secs = n; }
+                    if let Ok(n) = v.parse() {
+                        config.builder_sleep_secs = n;
+                    }
                 }
             }
             "--max-concurrent" => {
                 if let Some(v) = args.next() {
-                    if let Ok(n) = v.parse() { config.max_concurrent = n; }
+                    if let Ok(n) = v.parse() {
+                        config.max_concurrent = n;
+                    }
                 }
             }
             "--no-builder" => {

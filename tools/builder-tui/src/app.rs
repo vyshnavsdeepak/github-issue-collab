@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
@@ -14,12 +14,12 @@ const LOG_CAP: usize = 200;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
-    Send,                  // typing a prompt for the selected worker
-    Broadcast,             // typing a prompt for all idle workers
-    Command,               // free-form builder command (`:` key)
+    Send,                     // typing a prompt for the selected worker
+    Broadcast,                // typing a prompt for all idle workers
+    Command,                  // free-form builder command (`:` key)
     Detail { scroll: usize }, // pane / git log overlay
-    Prompt,                // free-form Claude prompt → spin up jobs
-    NewJob,                // enter issue number to spin up worker
+    Prompt,                   // free-form Claude prompt → spin up jobs
+    NewJob,                   // enter issue number to spin up worker
 }
 
 #[derive(Clone, Debug)]
@@ -127,18 +127,21 @@ impl App {
                 if let Some(prev_status) = self.prev_worker_states.get(&w.window_name) {
                     if prev_status != &w.status {
                         let toast = match (prev_status.as_str(), w.status.as_str()) {
-                            (prev, "active") if prev != "active" => {
-                                Some((format!("{} started working", w.window_name), ToastLevel::Info))
-                            }
+                            (prev, "active") if prev != "active" => Some((
+                                format!("{} started working", w.window_name),
+                                ToastLevel::Info,
+                            )),
                             ("active", "done") => {
                                 Some((format!("{} has a PR!", w.window_name), ToastLevel::Success))
                             }
-                            ("shell", "idle") => {
-                                Some((format!("{} Claude relaunched", w.window_name), ToastLevel::Info))
-                            }
-                            (_, "no-window") => {
-                                Some((format!("{} window lost", w.window_name), ToastLevel::Warning))
-                            }
+                            ("shell", "idle") => Some((
+                                format!("{} Claude relaunched", w.window_name),
+                                ToastLevel::Info,
+                            )),
+                            (_, "no-window") => Some((
+                                format!("{} window lost", w.window_name),
+                                ToastLevel::Warning,
+                            )),
                             _ => None,
                         };
                         if let Some((msg, level)) = toast {
@@ -151,7 +154,8 @@ impl App {
             // Update prev states
             self.prev_worker_states.clear();
             for w in &new_workers {
-                self.prev_worker_states.insert(w.window_name.clone(), w.status.clone());
+                self.prev_worker_states
+                    .insert(w.window_name.clone(), w.status.clone());
             }
 
             self.workers = new_workers;
@@ -189,10 +193,9 @@ impl App {
                         Some((ToastLevel::Success, m.to_string()))
                     } else if let Some(m) = body.strip_prefix("WARNING_") {
                         Some((ToastLevel::Warning, m.to_string()))
-                    } else if let Some(m) = body.strip_prefix("ERROR_") {
-                        Some((ToastLevel::Error, m.to_string()))
                     } else {
-                        None
+                        body.strip_prefix("ERROR_")
+                            .map(|m| (ToastLevel::Error, m.to_string()))
                     };
                     if let Some((level, message)) = parsed {
                         self.push_toast(&message, level);
@@ -527,9 +530,8 @@ impl App {
     }
 
     pub fn next_scan_remaining_secs(&self) -> Option<u64> {
-        self.next_scan_at.map(|at| {
-            at.saturating_duration_since(Instant::now()).as_secs()
-        })
+        self.next_scan_at
+            .map(|at| at.saturating_duration_since(Instant::now()).as_secs())
     }
 
     pub fn backoff_status(&self) -> String {

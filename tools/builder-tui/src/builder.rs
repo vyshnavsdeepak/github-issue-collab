@@ -1,8 +1,8 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use tokio::time::{Duration, sleep};
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::{sleep, Duration};
 
 use crate::config::Config;
 use crate::github;
@@ -38,7 +38,9 @@ fn parse_retry_after(text: &str) -> u64 {
     // "try again in N second(s)"
     if let Some(pos) = lower.find("try again in ") {
         let after = &lower[pos + 13..];
-        let num_end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+        let num_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
         if let Ok(n) = after[..num_end].parse::<u64>() {
             if after[num_end..].contains("minute") {
                 return n * 60;
@@ -79,9 +81,22 @@ Output ONLY json lines or NONE."#
     )
 }
 
-async fn create_worktree(config: &Config, issue_num: u64, branch: &str, worktree: &str) -> anyhow::Result<()> {
+async fn create_worktree(
+    config: &Config,
+    issue_num: u64,
+    branch: &str,
+    worktree: &str,
+) -> anyhow::Result<()> {
     let out = tokio::process::Command::new("git")
-        .args(["-C", &config.repo_root, "worktree", "add", worktree, "-b", branch])
+        .args([
+            "-C",
+            &config.repo_root,
+            "worktree",
+            "add",
+            worktree,
+            "-b",
+            branch,
+        ])
         .output()
         .await?;
     if !out.status.success() {
@@ -102,7 +117,10 @@ pub async fn launch_worker(
     let worktree = format!("{}/.claude/worktrees/issue-{issue_num}", config.repo_root);
 
     if Path::new(&worktree).exists() {
-        log(log_tx, format!("[builder] Worktree {worktree} already exists, reusing"));
+        log(
+            log_tx,
+            format!("[builder] Worktree {worktree} already exists, reusing"),
+        );
     } else {
         if let Err(e) = create_worktree(config, issue_num, &branch, &worktree).await {
             log(log_tx, format!("[builder] {e}"));
@@ -128,7 +146,10 @@ pub async fn launch_worker(
     if active >= config.max_concurrent {
         log(
             log_tx,
-            format!("[builder] Queued #{issue_num} (at capacity {active}/{})", config.max_concurrent),
+            format!(
+                "[builder] Queued #{issue_num} (at capacity {active}/{})",
+                config.max_concurrent
+            ),
         );
         return;
     }
@@ -144,13 +165,13 @@ pub async fn launch_worker(
         claude_prompt.replace('\'', "'\\''")
     );
     if let Err(e) = std::fs::write(&script_path, &script) {
-        log(log_tx, format!("[builder] Failed to write script {script_path}: {e}"));
+        log(
+            log_tx,
+            format!("[builder] Failed to write script {script_path}: {e}"),
+        );
         return;
     }
-    let _ = std::fs::set_permissions(
-        &script_path,
-        std::fs::Permissions::from_mode(0o755),
-    );
+    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
 
     let target = format!("{}:{window}", config.session);
     let _ = tokio::process::Command::new(&config.tmux)
@@ -158,14 +179,16 @@ pub async fn launch_worker(
         .output()
         .await;
 
-    log(log_tx, format!("[builder] Launched Claude in {}:{window} for issue #{issue_num}", config.session));
+    log(
+        log_tx,
+        format!(
+            "[builder] Launched Claude in {}:{window} for issue #{issue_num}",
+            config.session
+        ),
+    );
 }
 
-async fn process_task(
-    config: &Arc<Config>,
-    task: &Task,
-    log_tx: &mpsc::UnboundedSender<String>,
-) {
+async fn process_task(config: &Arc<Config>, task: &Task, log_tx: &mpsc::UnboundedSender<String>) {
     log(log_tx, format!("[builder] Creating issue: {}", task.title));
 
     let issue_num = match github::create_issue(&config.repo, &task.title, &task.body).await {
@@ -178,7 +201,11 @@ async fn process_task(
 
     log(log_tx, format!("[builder] Created issue #{issue_num}"));
     let title_preview: String = task.title.chars().take(30).collect();
-    toast(log_tx, "SUCCESS", &format!("Filed #{issue_num}: {title_preview}"));
+    toast(
+        log_tx,
+        "SUCCESS",
+        &format!("Filed #{issue_num}: {title_preview}"),
+    );
 
     let comment = format!(
         "🔨 **Vyshnav (Builder):** Picked this up → created #{}: **{}**. Spinning up a worktree now.\n\n**— Vyshnav (simulated builder)**",
@@ -219,7 +246,10 @@ async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::Unbounde
         } else {
             "continue with the task"
         };
-        log(log_tx, format!("[builder] Command: broadcasting to idle workers: {msg}"));
+        log(
+            log_tx,
+            format!("[builder] Command: broadcasting to idle workers: {msg}"),
+        );
         let windows = crate::monitor::list_windows(config).await;
         for (idx, _) in &windows {
             let pane = {
@@ -241,7 +271,10 @@ async fn handle_command(config: &Arc<Config>, cmd: &str, log_tx: &mpsc::Unbounde
         }
     } else {
         // Pass through as-is to a log message — future: could invoke claude with command
-        log(log_tx, format!("[builder] Unrecognized command (logged only): {cmd}"));
+        log(
+            log_tx,
+            format!("[builder] Unrecognized command (logged only): {cmd}"),
+        );
     }
 }
 
@@ -265,7 +298,10 @@ pub async fn run(
             let state = backoff.lock().await;
             if state.in_backoff() {
                 let remaining = state.remaining_secs();
-                log(&log_tx, format!("[builder] In backoff, {remaining}s remaining. Sleeping 30s..."));
+                log(
+                    &log_tx,
+                    format!("[builder] In backoff, {remaining}s remaining. Sleeping 30s..."),
+                );
                 drop(state);
                 sleep(Duration::from_secs(30)).await;
                 continue;
@@ -311,7 +347,10 @@ pub async fn run(
                 let err_str = e.to_string();
                 if is_rate_limited(&err_str) {
                     let wait = parse_retry_after(&err_str);
-                    log(&log_tx, format!("[builder] Rate limited, backing off {wait}s"));
+                    log(
+                        &log_tx,
+                        format!("[builder] Rate limited, backing off {wait}s"),
+                    );
                     toast(&log_tx, "WARNING", &format!("Rate limited — {wait}s"));
                     backoff.lock().await.set(wait);
                     sleep(Duration::from_secs(30)).await;
@@ -331,7 +370,10 @@ pub async fn run(
             if let Some(task) = tasks.into_iter().next() {
                 process_task(&config, &task, &log_tx).await;
             } else {
-                log(&log_tx, "[builder] No valid task JSON found in Claude output.");
+                log(
+                    &log_tx,
+                    "[builder] No valid task JSON found in Claude output.",
+                );
             }
         } else {
             log(&log_tx, "[builder] No new tasks.");
@@ -361,7 +403,13 @@ pub async fn run(
 
         // Signal countdown to TUI
         let _ = log_tx.send(format!("__NEXT_SCAN_{}__", config.builder_sleep_secs));
-        log(&log_tx, format!("[builder] Sleeping {}s before next scan...", config.builder_sleep_secs));
+        log(
+            &log_tx,
+            format!(
+                "[builder] Sleeping {}s before next scan...",
+                config.builder_sleep_secs
+            ),
+        );
         sleep(Duration::from_secs(config.builder_sleep_secs)).await;
     }
 }

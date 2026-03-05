@@ -1,11 +1,11 @@
 use std::sync::atomic::Ordering;
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
+    Frame,
 };
 
 use crate::app::{App, Mode, ToastLevel};
@@ -82,7 +82,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 format!(" Session: {} ", app.session),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("│ "),
             Span::styled(
@@ -130,8 +132,11 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     let header_cells = ["ISSUE", "PIPELINE", "STATE", "LAST OUTPUT"]
         .iter()
         .map(|h| {
-            Cell::from(*h)
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
         });
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
@@ -252,10 +257,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "Broadcast to idle workers".to_string(),
             format!(" > {}_", app.input),
         ),
-        Mode::Command => (
-            "Builder Command".to_string(),
-            format!(" : {}_", app.input),
-        ),
+        Mode::Command => ("Builder Command".to_string(), format!(" : {}_", app.input)),
         Mode::Prompt => (
             "Prompt (Claude extracts & spins up tasks)".to_string(),
             format!(" > {}_", app.input),
@@ -284,7 +286,12 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect, scroll: usize) {
     let height = (area.height * 4 / 5).max(10);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     f.render_widget(Clear, rect);
 
@@ -331,12 +338,7 @@ fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
     const MAX_VISIBLE: usize = 4;
 
     // Show newest toasts on top (take last MAX_VISIBLE, reversed)
-    let visible: Vec<_> = app
-        .toasts
-        .iter()
-        .rev()
-        .take(MAX_VISIBLE)
-        .collect();
+    let visible: Vec<_> = app.toasts.iter().rev().take(MAX_VISIBLE).collect();
 
     let total_height = visible.len() as u16 * TOAST_HEIGHT;
     if area.width < TOAST_WIDTH + 2 || area.height < total_height + 2 {
