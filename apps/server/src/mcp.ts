@@ -115,6 +115,7 @@ interface AuthContext {
   repo: { owner: string; repo: string }
   userId: string
   inviteCode: string | null
+  designerName: string | null
 }
 
 function loadPrivateKey(): string {
@@ -157,7 +158,7 @@ async function resolveAuth(req: Request): Promise<AuthContext | null> {
     if (!user.repo) return null
     const [owner, repo] = user.repo.split('/')
     if (!owner || !repo) return null
-    return { role: 'developer', installationId: user.installation_id, repo: { owner, repo }, userId: user.id, inviteCode: null }
+    return { role: 'developer', installationId: user.installation_id, repo: { owner, repo }, userId: user.id, inviteCode: null, designerName: null }
   }
 
   // Try designer (session token)
@@ -176,7 +177,7 @@ async function resolveAuth(req: Request): Promise<AuthContext | null> {
 
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) return null
-    return { role: 'designer', installationId: ownerUser.installation_id, repo: { owner, repo }, userId: session.user_id, inviteCode: session.invite_code }
+    return { role: 'designer', installationId: ownerUser.installation_id, repo: { owner, repo }, userId: session.user_id, inviteCode: session.invite_code, designerName: session.github_user }
   }
 
   return null
@@ -362,7 +363,7 @@ async function callTool(
       if (ctx.role === 'designer' && ctx.inviteCode) {
         void db.recordInviteEvent(ctx.inviteCode, 'comment_submitted')
       }
-      const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
+      const prefix = ctx.role === 'developer' ? '[Developer] ' : ctx.designerName ? `[Designer: ${ctx.designerName}] ` : '[Designer] '
       const comment = await addComment({ owner, repo, issueNumber, token, body: `${prefix}${body}` })
       cacheInvalidateRepo(owner, repo)
       return { content: [{ type: 'text', text: `Comment added: ${comment.html_url}` }] }
@@ -375,7 +376,7 @@ async function callTool(
       if (ctx.role === 'designer' && ctx.inviteCode) {
         void db.recordInviteEvent(ctx.inviteCode, 'comment_submitted')
       }
-      const prefix = ctx.role === 'developer' ? '[Developer] ' : '[Designer] '
+      const prefix = ctx.role === 'developer' ? '[Developer] ' : ctx.designerName ? `[Designer: ${ctx.designerName}] ` : '[Designer] '
       let commentBody = `${prefix}## Decision\n${decision}`
       if (rationale) commentBody += `\n\n**Rationale:** ${rationale}`
       const comment = await addComment({ owner, repo, issueNumber, token, body: commentBody })
