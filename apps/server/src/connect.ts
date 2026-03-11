@@ -11,6 +11,7 @@ import {
   listSessionsForUser,
   listPendingInvitesForUser,
   createInviteCode,
+  createBulkInviteCodes,
   resendInviteCode,
   isInviteExpired,
   revokeDesignerSession,
@@ -469,7 +470,57 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
 
   <!-- INVITES -->
   <section class="border-b-4 border-black px-6 py-6">
-    <h3 class="font-bold text-lg mb-4">Pending Invite Links</h3>
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-lg">Pending Invite Links</h3>
+      <button id="bulk-invite-btn" onclick="toggleBulkInvite()" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">+ Bulk Invite</button>
+    </div>
+    <div id="bulk-invite-panel" class="hidden border-2 border-black p-4 mb-4 bg-gray-50">
+      <p class="text-xs text-gray-500 mb-2">Enter GitHub usernames or emails, one per line or comma-separated:</p>
+      <textarea id="bulk-recipients" rows="4" class="w-full border-2 border-black font-mono text-xs p-2 mb-2 bg-white" placeholder="alice&#10;bob&#10;charlie@example.com"></textarea>
+      <div class="flex gap-2 items-center">
+        <button onclick="createBulkInvites()" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1.5 hover:bg-white hover:text-black">Generate Invite Links</button>
+        <span id="bulk-status" class="text-xs text-gray-500"></span>
+      </div>
+      <div id="bulk-results" class="hidden mt-4">
+        <p class="text-xs font-bold mb-2">Generated links (click to copy):</p>
+        <div id="bulk-links" class="space-y-1"></div>
+      </div>
+    </div>
+    <script>
+      function toggleBulkInvite() {
+        const panel = document.getElementById('bulk-invite-panel');
+        panel.classList.toggle('hidden');
+      }
+      async function createBulkInvites() {
+        const raw = document.getElementById('bulk-recipients').value;
+        const recipients = raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+        if (!recipients.length) return;
+        const status = document.getElementById('bulk-status');
+        status.textContent = 'Generating…';
+        try {
+          const res = await fetch('/dashboard/bulk-invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipients }),
+          });
+          const data = await res.json();
+          const results = document.getElementById('bulk-results');
+          const linksDiv = document.getElementById('bulk-links');
+          linksDiv.innerHTML = data.invites.map(inv => \`
+            <div class="flex items-center gap-2 border-2 border-black p-2 bg-white">
+              <span class="text-xs font-bold w-24 shrink-0 truncate">\${inv.recipient}</span>
+              <span class="font-mono text-xs flex-1 truncate" id="bulk-\${inv.code}">\${inv.url}</span>
+              <button onclick="copyEl('bulk-\${inv.code}', this)" class="text-xs font-bold border-2 border-black px-2 py-0.5 hover:bg-black hover:text-white shrink-0">Copy</button>
+            </div>
+          \`).join('');
+          results.classList.remove('hidden');
+          status.textContent = \`\${data.invites.length} link\${data.invites.length === 1 ? '' : 's'} generated\`;
+          setTimeout(() => location.reload(), 5000);
+        } catch (e) {
+          status.textContent = 'Error generating links';
+        }
+      }
+    </script>
     <div class="overflow-x-auto">
       <table class="w-full text-sm border-2 border-black">
         <thead class="bg-black text-white">
@@ -707,6 +758,39 @@ export async function handleResendInvite(req: Request, res: Response): Promise<v
   const inviteUrl = `${getInviteBaseUrl()}/invite?code=${newInvite.code}`
   const messageTemplate = `Hey [name], I'd love your input on some UI decisions. No GitHub account needed — just click this link: ${inviteUrl}`
   res.json({ code: newInvite.code, url: inviteUrl, message_template: messageTemplate })
+}
+
+export async function handleBulkCreateInvite(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const recipients = body['recipients']
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    res.status(400).json({ error: 'recipients must be a non-empty array' })
+    return
+  }
+  const cleaned: string[] = recipients.map(r => String(r).trim()).filter(Boolean)
+  if (cleaned.length === 0) {
+    res.status(400).json({ error: 'No valid recipients' })
+    return
+  }
+
+  const invites = await createBulkInviteCodes(user.id, cleaned)
+  for (const invite of invites) {
+    void recordInviteEvent(invite.code, 'invite_generated')
+  }
+  const baseUrl = getInviteBaseUrl()
+  res.json({
+    invites: invites.map(invite => ({
+      code: invite.code,
+      recipient: invite.recipient,
+      url: `${baseUrl}/invite?code=${invite.code}`,
+    })),
+  })
 }
 
 export async function handleDashboardSetRepo(req: Request, res: Response): Promise<void> {
