@@ -7,7 +7,7 @@ import express from 'express'
 import { z } from 'zod'
 import { getInstallationToken } from './github'
 import { getUserByApiKey, runMigrations, countInviteCodes, getFirstUser, createInviteCode } from './db'
-import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo } from './connect'
+import { handleConnect, handleConnectCallback, handleDashboard, handleDashboardLogin, handleDashboardCallback, handleDashboardLogout, handleCreateInvite, handleResendInvite, handleRevokeSession, handleDashboardSetRepo, handleDashboardIssue, handleAcknowledgeComment } from './connect'
 import { handleMcp, handleInvite, handleInviteOAuthCallback } from './mcp'
 import multer from 'multer'
 import { handleDesignerPortal, handleDesignerIssue, handleDesignerComment, handleDesignerDecision } from './designer'
@@ -84,6 +84,14 @@ app.post('/dashboard/revoke', (req, res) => {
 
 app.post('/dashboard/set-repo', (req, res) => {
   void handleDashboardSetRepo(req, res)
+})
+
+app.get('/dashboard/issues/:issueId', (req, res) => {
+  void handleDashboardIssue(req, res)
+})
+
+app.post('/dashboard/issues/:issueId/comments/:commentId/acknowledge', (req, res) => {
+  void handleAcknowledgeComment(req, res)
 })
 
 app.get('/invite', (req, res) => {

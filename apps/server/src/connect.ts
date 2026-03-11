@@ -16,9 +16,11 @@ import {
   revokeDesignerSession,
   recordInviteEvent,
   getFunnelForUser,
+  acknowledgeComment,
+  getAcknowledgedCommentIds,
   type FunnelRow,
 } from './db.js'
-import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, getSuggestedDesigners } from './github.js'
+import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, getSuggestedDesigners, getIssue, listIssueComments, addComment } from './github.js'
 import type { Issue } from './github.js'
 import { errorPage } from './ui.js'
 
@@ -271,16 +273,23 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">No active designers yet — create an invite link below</td></tr>`
 
   const issueRows = issues.length
-    ? issues.map(issue => `
+    ? issues.map(issue => {
+        const hasDesignerInput = issue.labels.some(l => l.name === 'designer-input')
+        const issueLink = hasDesignerInput
+          ? `/dashboard/issues/${issue.number}`
+          : issue.html_url
+        const linkAttrs = hasDesignerInput ? '' : ' target="_blank" rel="noopener"'
+        return `
       <tr class="border-t-2 border-black">
         <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">#${issue.number}</td>
         <td class="p-3 border-r-2 border-black">
-          <a href="${esc(issue.html_url)}" target="_blank" rel="noopener" class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
+          <a href="${esc(issueLink)}"${linkAttrs} class="font-bold hover:bg-black hover:text-white">${esc(issue.title)}</a>
           ${issue.labels.length ? `<div class="mt-1">${issue.labels.map(labelBadge).join('')}</div>` : ''}
         </td>
         <td class="p-3 border-r-2 border-black text-xs text-gray-500 whitespace-nowrap">${esc(issue.user?.login ?? '—')}</td>
         <td class="p-3 text-xs text-gray-500 whitespace-nowrap">${timeAgo(issue.updated_at)}</td>
-      </tr>`).join('')
+      </tr>`
+      }).join('')
     : `<tr><td colspan="4" class="p-4 text-sm text-gray-400 text-center">${user.repo ? 'No open issues' : 'No repo configured'}</td></tr>`
 
   const inviteRows = invites.length
@@ -761,6 +770,196 @@ function labelBadge(label: { name: string; color: string }): string {
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
   const fg = lum > 0.5 ? '#000' : '#fff'
   return `<span style="background:${esc(bg)};color:${fg};border:1px solid rgba(0,0,0,0.2)" class="inline-block text-xs px-1.5 py-0.5 font-mono font-bold mr-1">${esc(label.name)}</span>`
+}
+
+export async function handleDashboardIssue(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.redirect('/dashboard'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.redirect('/dashboard'); return }
+
+  const issueNumber = Number(req.params['issueId'])
+  if (!issueNumber || !user.repo) { res.status(400).send('Invalid issue number or no repo configured'); return }
+
+  const appId = process.env.GITHUB_APP_ID
+  let privateKey: string
+  try { privateKey = loadPrivateKey() } catch (err) { res.status(500).send(String(err)); return }
+  if (!appId) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+
+  let token: string
+  try { token = await getInstallationToken(user.installation_id, appId, privateKey) } catch (err) {
+    res.status(502).send(`GitHub token error: ${err instanceof Error ? err.message : String(err)}`); return
+  }
+
+  const [owner, repo] = user.repo.split('/')
+
+  let issue, comments, acknowledgedIds: number[]
+  try {
+    ;[issue, comments, acknowledgedIds] = await Promise.all([
+      getIssue({ owner, repo, issueNumber, token }),
+      listIssueComments({ owner, repo, issueNumber, token }),
+      getAcknowledgedCommentIds(user.id, issueNumber),
+    ])
+  } catch (err) {
+    res.status(502).send(`GitHub error: ${err instanceof Error ? err.message : String(err)}`); return
+  }
+
+  const acknowledgedSet = new Set(acknowledgedIds)
+
+  const successMsg = req.query['success']
+    ? `<div class="border-2 border-green-600 bg-green-50 text-green-800 px-4 py-3 text-sm font-bold mb-4">✓ ${esc(req.query['success'] as string)}</div>`
+    : ''
+
+  function parseRolePrefix(text: string | null): { role?: string; text: string } {
+    if (!text) return { text: '' }
+    const match = text.match(/^\[(Developer|Designer)\]\s*/)
+    if (match) return { role: match[1]!.toLowerCase(), text: text.slice(match[0].length) }
+    return { text }
+  }
+
+  const roleBadge = (role?: string) => role
+    ? `<span class="text-xs border px-1 ${role === 'designer' ? 'border-yellow-500 text-yellow-700' : 'border-blue-500 text-blue-700'}">${role}</span>`
+    : ''
+
+  const commentItems = comments.map(c => {
+    const { text, role } = parseRolePrefix(c.body)
+    const isDesigner = role === 'designer'
+    const isAcknowledged = acknowledgedSet.has(c.id)
+    const acknowledgeForm = isDesigner && !isAcknowledged
+      ? `<form method="POST" action="/dashboard/issues/${issueNumber}/comments/${c.id}/acknowledge" class="mt-3 flex flex-col gap-2">
+          <input type="text" name="action_taken" placeholder="What action was taken? (optional)"
+            class="border-2 border-black px-2 py-1 text-xs w-full max-w-md bg-white font-mono">
+          <div>
+            <button type="submit" class="text-xs font-bold bg-black text-white border-2 border-black px-3 py-1 hover:bg-white hover:text-black">
+              Mark as Addressed
+            </button>
+          </div>
+        </form>`
+      : isAcknowledged
+        ? `<div class="mt-2 text-xs text-green-700 border border-green-400 px-2 py-1 inline-block">✓ Addressed</div>`
+        : ''
+    return `
+    <div class="border-2 border-black p-4 ${isDesigner ? 'border-l-4 border-l-yellow-500' : ''}">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-sm">${esc(c.user?.login ?? '—')}</span>
+          ${roleBadge(role)}
+        </div>
+        <span class="text-xs text-gray-500">${new Date(c.created_at).toLocaleDateString()}</span>
+      </div>
+      <div class="text-sm whitespace-pre-wrap">${esc(text)}</div>
+      ${acknowledgeForm}
+    </div>`
+  }).join('')
+
+  const { text: issueBody } = parseRolePrefix(issue.body)
+  const labelBadges = issue.labels.map(l =>
+    `<span class="text-xs border border-gray-400 px-1">${esc(l.name)}</span>`
+  ).join(' ')
+
+  const body = `
+  <section class="border-b-4 border-black px-6 py-6 bg-black text-white">
+    <a href="/dashboard" class="text-xs text-gray-400 hover:text-white no-underline mb-3 inline-block">← Back to dashboard</a>
+    <div class="flex items-start gap-3">
+      <span class="text-gray-500 text-xl mt-0.5">#${issue.number}</span>
+      <div>
+        <h2 class="font-bold text-2xl mb-2">${esc(issue.title)}</h2>
+        <div class="flex flex-wrap gap-2">${labelBadges}</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="px-6 py-6 border-b-4 border-black">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="font-bold text-sm">${esc(issue.user?.login ?? '—')}</span>
+      <span class="text-xs text-gray-500">${new Date(issue.created_at).toLocaleDateString()}</span>
+    </div>
+    ${issueBody ? `<div class="text-sm whitespace-pre-wrap border-l-4 border-gray-300 pl-4">${esc(issueBody)}</div>` : '<p class="text-sm text-gray-400 italic">No description</p>'}
+  </div>
+
+  <div class="px-6 py-6">
+    <h3 class="font-bold text-lg mb-4">${comments.length} Comment${comments.length === 1 ? '' : 's'}</h3>
+    ${successMsg}
+    <div class="flex flex-col gap-3">
+      ${comments.length ? commentItems : '<p class="text-sm text-gray-400">No comments yet.</p>'}
+    </div>
+  </div>`
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>#${issueNumber} ${esc(issue.title)} — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { border-radius: 0 !important; box-shadow: none !important; transition: none !important; }
+    a { text-decoration: underline; }
+    a:hover { background: #000; color: #fff; }
+    pre, code { font-family: monospace; }
+    textarea, input { font-family: monospace; }
+  </style>
+</head>
+<body class="bg-white text-black font-mono">
+  <header class="border-b-4 border-black px-6 py-4 flex items-center justify-between">
+    <a href="/" class="font-bold text-xl no-underline hover:bg-transparent hover:text-black">github-issue-collab</a>
+    <div class="flex items-center gap-4 text-sm">
+      <span class="text-gray-500">${esc(user.github_user ?? '')} / ${esc(user.repo ?? '')}</span>
+      <span class="border-2 border-black px-2 py-0.5 text-xs">dashboard</span>
+    </div>
+  </header>
+  ${body}
+</body>
+</html>`)
+}
+
+export async function handleAcknowledgeComment(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const issueNumber = Number(req.params['issueId'])
+  const commentId = Number(req.params['commentId'])
+  if (!issueNumber || !commentId || !user.repo) {
+    res.status(400).send('Invalid parameters'); return
+  }
+
+  const body = req.body as Record<string, unknown>
+  const actionTaken = ((body['action_taken'] as string | undefined) ?? '').trim() || undefined
+
+  if (!process.env.GITHUB_APP_ID) { res.status(500).send('GITHUB_APP_ID not configured'); return }
+  let privateKey: string
+  try { privateKey = loadPrivateKey() } catch (err) { res.status(500).send(String(err)); return }
+
+  const [owner, repo] = user.repo.split('/')
+  let token: string
+  try { token = await getInstallationToken(user.installation_id, process.env.GITHUB_APP_ID, privateKey) } catch (err) {
+    res.status(502).send(`GitHub token error: ${err instanceof Error ? err.message : String(err)}`); return
+  }
+
+  // Find the original comment to get the designer's name
+  let designerName = 'designer'
+  try {
+    const comments = await listIssueComments({ owner, repo, issueNumber, token })
+    const comment = comments.find(c => c.id === commentId)
+    if (comment?.user?.login) designerName = comment.user.login
+  } catch { /* non-fatal — use fallback name */ }
+
+  const ghCommentBody = `> **Developer acknowledged** @${designerName}'s feedback: ${actionTaken ?? 'No action needed'}`
+
+  try {
+    await Promise.all([
+      addComment({ owner, repo, issueNumber, token, body: ghCommentBody }),
+      acknowledgeComment({ userId: user.id, issueNumber, githubCommentId: commentId, actionTaken }),
+    ])
+  } catch (err) {
+    res.status(502).send(`Error: ${err instanceof Error ? err.message : String(err)}`); return
+  }
+
+  res.redirect(`/dashboard/issues/${issueNumber}?success=Feedback+acknowledged`)
 }
 
 function loginPage(error?: string): string {
