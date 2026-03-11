@@ -339,6 +339,44 @@ export async function handleDesignerIssue(req: Request, res: Response): Promise<
   res.send(layout(`#${issueNumber} ${issue.title}`, body, ctx.session.github_user ?? 'designer', `${ctx.owner}/${ctx.repo}`))
 }
 
+async function fireDesignerCommentWebhook(params: {
+  userId: string
+  designerName: string
+  commentBody: string
+  issueNumber: number
+  owner: string
+  repo: string
+}): Promise<void> {
+  try {
+    const webhookUrl = await db.getUserWebhookUrl(params.userId)
+    if (!webhookUrl) return
+
+    const issueLink = `https://github.com/${params.owner}/${params.repo}/issues/${params.issueNumber}`
+    const payload = {
+      text: `New designer feedback on *${params.owner}/${params.repo}* issue #${params.issueNumber}`,
+      attachments: [
+        {
+          fallback: `${params.designerName}: ${params.commentBody}`,
+          author_name: params.designerName,
+          title: `Issue #${params.issueNumber}`,
+          title_link: issueLink,
+          text: params.commentBody.slice(0, 500),
+          footer: 'github-issue-collab',
+        },
+      ],
+    }
+
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (err) {
+    console.warn(`[designer] Webhook delivery failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 async function uploadScreenshots(files: Express.Multer.File[]): Promise<string[]> {
   const token = process.env.BLOB_READ_WRITE_TOKEN
   if (!token || files.length === 0) return []
@@ -405,6 +443,16 @@ export async function handleDesignerComment(req: Request, res: Response): Promis
     res.status(502).send(`GitHub error: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
+
+  // Fire webhook notification (non-blocking)
+  void fireDesignerCommentWebhook({
+    userId: ctx.ownerUser.id,
+    designerName: ctx.session.github_user ?? 'designer',
+    commentBody,
+    issueNumber,
+    owner: ctx.owner,
+    repo: ctx.repo,
+  })
 
   res.redirect(`/designer/issue/${issueNumber}?success=Comment+posted`)
 }

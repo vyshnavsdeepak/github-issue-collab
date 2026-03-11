@@ -16,6 +16,8 @@ import {
   revokeDesignerSession,
   recordInviteEvent,
   getFunnelForUser,
+  setUserWebhookUrl,
+  getUserWebhookUrl,
   type FunnelRow,
 } from './db.js'
 import { getAppInstallation, getInstallationRepos, getAuthUser, getInstallationToken, listIssues, getSuggestedDesigners } from './github.js'
@@ -210,10 +212,11 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     }
   }
 
-  const [sessions, invites, funnel] = await Promise.all([
+  const [sessions, invites, funnel, webhookUrl] = await Promise.all([
     listSessionsForUser(user.id),
     listPendingInvitesForUser(user.id),
     getFunnelForUser(user.id),
+    getUserWebhookUrl(user.id),
   ])
 
   let suggestions: Array<{ login: string; issueNumbers: number[] }> = []
@@ -545,6 +548,38 @@ export async function handleDashboard(req: Request, res: Response): Promise<void
     </div>
   </section>
 
+  <!-- WEBHOOK SETTINGS -->
+  <section class="border-b-4 border-black px-6 py-6">
+    <h3 class="font-bold text-lg mb-1">Webhook Notifications</h3>
+    <p class="text-xs text-gray-500 mb-4">Receive designer feedback in Slack, Discord, or any custom endpoint. Compatible with Slack incoming webhooks.</p>
+    <form method="POST" action="/dashboard/webhook" class="flex items-center gap-2 mb-3">
+      <input type="url" name="webhook_url" placeholder="https://hooks.slack.com/services/…"
+        value="${webhookUrl ? esc(webhookUrl) : ''}"
+        class="flex-1 text-xs border-2 border-black px-2 py-1.5 font-mono focus:outline-none" maxlength="500">
+      <button type="submit" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">Save</button>
+    </form>
+    ${webhookUrl ? `<div class="flex items-center gap-3">
+      <button onclick="testWebhook(this)" class="text-xs font-bold border-2 border-black px-3 py-1.5 hover:bg-black hover:text-white">Send Test Payload</button>
+      <span id="webhook-test-status" class="text-xs text-gray-500"></span>
+    </div>
+    <script>
+    async function testWebhook(btn) {
+      btn.disabled = true;
+      btn.textContent = '…';
+      const status = document.getElementById('webhook-test-status');
+      try {
+        const res = await fetch('/dashboard/webhook/test', { method: 'POST' });
+        const data = await res.json();
+        status.textContent = data.ok ? ('Delivered ✓ (HTTP ' + data.status + ')') : ('Error: ' + (data.error ?? 'unknown'));
+      } catch (e) {
+        status.textContent = 'Request failed';
+      }
+      btn.disabled = false;
+      btn.textContent = 'Send Test Payload';
+    }
+    </script>` : ''}
+  </section>
+
   <footer class="px-6 py-4 border-t-2 border-black flex justify-between items-center text-xs text-gray-500">
     <span>API key: <code class="bg-gray-100 px-1">${esc(apiKey)}</code></span>
     <a href="/">← Home</a>
@@ -746,6 +781,56 @@ export async function handleDashboardSetRepo(req: Request, res: Response): Promi
 
   await updateUserRepo(user.id, repo)
   res.redirect('/dashboard')
+}
+
+export async function handleSetWebhook(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).send('Not authenticated'); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).send('Invalid session'); return }
+
+  const body = req.body as Record<string, unknown>
+  const url = typeof body['webhook_url'] === 'string' ? body['webhook_url'].trim() : ''
+  await setUserWebhookUrl(user.id, url || null)
+  res.redirect('/dashboard')
+}
+
+export async function handleTestWebhook(req: Request, res: Response): Promise<void> {
+  const apiKey = parseCookie(req, 'gh_session')
+  if (!apiKey) { res.status(401).json({ error: 'Not authenticated' }); return }
+
+  const user = await getUserByApiKey(apiKey)
+  if (!user) { res.status(401).json({ error: 'Invalid session' }); return }
+
+  const webhookUrl = await getUserWebhookUrl(user.id)
+  if (!webhookUrl) { res.status(400).json({ error: 'No webhook URL configured' }); return }
+
+  const payload = {
+    text: `Test webhook from github-issue-collab`,
+    attachments: [
+      {
+        fallback: 'Test Designer: This is a sample designer feedback payload.',
+        author_name: 'Test Designer',
+        title: `Issue #1 — Sample Issue`,
+        title_link: `https://github.com/${user.repo ?? 'owner/repo'}/issues/1`,
+        text: 'This is a sample designer feedback payload sent from your dashboard to verify the webhook URL is working correctly.',
+        footer: 'github-issue-collab',
+      },
+    ],
+  }
+
+  try {
+    const webhookRes = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    })
+    res.json({ ok: true, status: webhookRes.status })
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 function esc(str: string): string {
