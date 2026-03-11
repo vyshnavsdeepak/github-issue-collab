@@ -9,6 +9,7 @@ import {
   addComment,
 } from './github.js'
 import { put } from '@vercel/blob'
+import Anthropic from '@anthropic-ai/sdk'
 
 function loadPrivateKey(): string {
   if (process.env.GITHUB_PRIVATE_KEY_PATH) {
@@ -450,4 +451,82 @@ export async function handleDesignerDecision(req: Request, res: Response): Promi
   }
 
   res.redirect(`/designer/issue/${issueNumber}?success=Decision+recorded`)
+}
+
+export async function handleDesignerDesignPrompts(req: Request, res: Response): Promise<void> {
+  let ctx: DesignerContext | null
+  try {
+    ctx = await resolveDesignerContext(req)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+    return
+  }
+
+  if (!ctx) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const issueNumber = Number(req.params['number'])
+  if (!issueNumber) {
+    res.status(400).json({ error: 'Invalid issue number' })
+    return
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
+    res.json({ prompts: [] })
+    return
+  }
+
+  let issue, comments
+  try {
+    ;[issue, comments] = await Promise.all([
+      getIssue({ owner: ctx.owner, repo: ctx.repo, issueNumber, token: ctx.token }),
+      listIssueComments({ owner: ctx.owner, repo: ctx.repo, issueNumber, token: ctx.token }),
+    ])
+  } catch (err) {
+    res.status(502).json({ error: `GitHub error: ${err instanceof Error ? err.message : String(err)}` })
+    return
+  }
+
+  const hasLabel = issue.labels.some(l => l.name === 'designer-input')
+  if (!hasLabel) {
+    res.status(403).json({ error: 'Not a designer-input issue' })
+    return
+  }
+
+  const commentsText = comments.slice(-5).map(c => `${c.user?.login ?? 'unknown'}: ${c.body ?? ''}`).join('\n\n')
+
+  const prompt = `You are helping a designer provide focused, actionable feedback on a GitHub issue.
+
+Issue title: ${issue.title}
+Issue body: ${issue.body ?? '(no description)'}
+${commentsText ? `\nRecent comments:\n${commentsText}` : ''}
+
+Generate 2-3 specific, actionable design questions that will help the designer provide useful feedback. Focus on concrete visual or UX aspects relevant to this issue. Output only a JSON array of strings, no other text. Example format:
+["Does the active state feel visually distinct enough from inactive?", "Is the error state communicated clearly without relying on color alone?"]`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 256,
+      messages: [{ role: 'user', content: prompt }],
+    })
+
+    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '[]'
+    let prompts: string[] = []
+    try {
+      prompts = JSON.parse(text)
+      if (!Array.isArray(prompts)) prompts = []
+    } catch {
+      prompts = []
+    }
+
+    res.json({ prompts })
+  } catch (err) {
+    // Gracefully degrade — return empty prompts if Claude is unavailable
+    res.json({ prompts: [] })
+  }
 }
